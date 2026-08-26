@@ -1,0 +1,160 @@
+{
+  "_meta": { "managed_by": "homelab-logging" },
+  "description": "Parse a raw UniFi CEF syslog line inside Elasticsearch. The cef integration decodes CEF in the agent, with a decode_cef processor that has no ingest-pipeline equivalent — so documents that reached the wrong listener cannot simply be replayed through the cef package pipeline. This reproduces enough of decode_cef to make a rescued document match a live one, then hands off to unifi-cef-common for the ECS normalisation both paths share. Used by migrate-unifi-cef.sh; not part of the live ingest path.",
+  "processors": [
+    {
+      "set": {
+        "description": "Reindex targets the cef data stream, so the routing fields have to follow.",
+        "field": "data_stream.type",
+        "value": "logs"
+      }
+    },
+    { "set": { "field": "data_stream.dataset", "value": "cef.log" } },
+    { "set": { "field": "event.dataset", "value": "cef.log" } },
+
+    {
+      "remove": {
+        "description": "Clear the failure the iptables pipeline recorded. If this pipeline fails the document keeps its original error instead, because on_failure below re-records it.",
+        "field": ["error.message", "event.kind"],
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "set": {
+        "description": "Fleet's .fleet_final_pipeline-1 removes event.original unless the preserve_original_event tag is set, so it is there during live ingest but gone from anything already indexed without that tag. The package's own header on_failure copies the whole line into message — which happens on exactly the documents whose framing it could not parse, so message carries the full raw line precisely when it is needed.",
+        "field": "_tmp.raw",
+        "copy_from": "event.original",
+        "if": "ctx.event?.original != null"
+      }
+    },
+    {
+      "set": {
+        "field": "_tmp.raw",
+        "copy_from": "message",
+        "if": "ctx._tmp?.raw == null && ctx.message != null"
+      }
+    },
+    {
+      "grok": {
+        "description": "The CEF header. Values containing an escaped \\| would split early; UniFi does not use one in any observed header field, and a mis-split would show up as a vendor that is not Ubiquiti, which unifi-cef-common then skips.",
+        "field": "_tmp.raw",
+        "patterns": [
+          "CEF:%{NONNEGINT:cef.version}\\|%{DATA:cef.device.vendor}\\|%{DATA:cef.device.product}\\|%{DATA:cef.device.version}\\|%{DATA:cef.device.event_class_id}\\|%{DATA:cef.name}\\|%{DATA:_tmp.severity}\\|%{GREEDYDATA:_tmp.ext}"
+        ]
+      }
+    },
+    {
+      "kv": {
+        "description": "CEF extensions are space-separated key=value, but values may themselves contain spaces — 'UNIFIipsSignature=ET CINS Active Threat ...'. Splitting on a space followed by a key= lookahead is what keeps those whole.",
+        "field": "_tmp.ext",
+        "field_split": " (?=[A-Za-z][A-Za-z0-9_]*=)",
+        "value_split": "=",
+        "target_field": "cef.extensions",
+        "ignore_missing": true
+      }
+    },
+
+    {
+      "rename": {
+        "description": "decode_cef expands the standard CEF abbreviations to their full names before anything else sees them. Rescued documents have to match, or they will not aggregate with live ones.",
+        "field": "cef.extensions.src",
+        "target_field": "cef.extensions.sourceAddress",
+        "ignore_missing": true
+      }
+    },
+    { "rename": { "field": "cef.extensions.dst", "target_field": "cef.extensions.destinationAddress", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.spt", "target_field": "cef.extensions.sourcePort", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.dpt", "target_field": "cef.extensions.destinationPort", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.proto", "target_field": "cef.extensions.transportProtocol", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.act", "target_field": "cef.extensions.deviceAction", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.app", "target_field": "cef.extensions.applicationProtocol", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.msg", "target_field": "cef.extensions.message", "ignore_missing": true } },
+    { "rename": { "field": "cef.extensions.suser", "target_field": "cef.extensions.sourceUserName", "ignore_missing": true } },
+
+    {
+      "set": {
+        "description": "decode_cef leaves cef.severity as the raw string and puts the number on event.severity. Matching that exactly is what lets rescued and live documents aggregate together.",
+        "field": "cef.severity",
+        "copy_from": "_tmp.severity",
+        "if": "ctx._tmp?.severity != null"
+      }
+    },
+    {
+      "convert": { "field": "_tmp.severity", "target_field": "event.severity", "type": "long", "ignore_missing": true, "ignore_failure": true }
+    },
+    { "set": { "field": "observer.vendor",  "copy_from": "cef.device.vendor",  "if": "ctx.cef?.device?.vendor != null" } },
+    { "set": { "field": "observer.product", "copy_from": "cef.device.product", "if": "ctx.cef?.device?.product != null" } },
+    { "set": { "field": "observer.version", "copy_from": "cef.device.version", "if": "ctx.cef?.device?.version != null" } },
+    { "set": { "field": "event.code",       "copy_from": "cef.device.event_class_id", "if": "ctx.cef?.device?.event_class_id != null" } },
+
+    { "set": { "field": "message", "copy_from": "cef.extensions.message", "if": "ctx.cef?.extensions?.message != null" } },
+    { "set": { "field": "source.ip", "copy_from": "cef.extensions.sourceAddress", "if": "ctx.cef?.extensions?.sourceAddress != null" } },
+    { "set": { "field": "destination.ip", "copy_from": "cef.extensions.destinationAddress", "if": "ctx.cef?.extensions?.destinationAddress != null" } },
+    { "convert": { "field": "cef.extensions.sourcePort", "type": "long", "ignore_missing": true, "ignore_failure": true } },
+    { "convert": { "field": "cef.extensions.destinationPort", "type": "long", "ignore_missing": true, "ignore_failure": true } },
+    { "set": { "field": "source.port", "copy_from": "cef.extensions.sourcePort", "if": "ctx.cef?.extensions?.sourcePort != null" } },
+    { "set": { "field": "destination.port", "copy_from": "cef.extensions.destinationPort", "if": "ctx.cef?.extensions?.destinationPort != null" } },
+    { "set": { "field": "network.transport", "copy_from": "cef.extensions.transportProtocol", "if": "ctx.cef?.extensions?.transportProtocol != null" } },
+    { "lowercase": { "field": "network.transport", "ignore_missing": true } },
+    { "set": { "field": "network.application", "copy_from": "cef.extensions.applicationProtocol", "if": "ctx.cef?.extensions?.applicationProtocol != null" } },
+    { "set": { "field": "event.action", "copy_from": "cef.extensions.deviceAction", "if": "ctx.cef?.extensions?.deviceAction != null" } },
+    { "set": { "field": "source.user.name", "copy_from": "cef.extensions.sourceUserName", "if": "ctx.cef?.extensions?.sourceUserName != null" } },
+    {
+      "append": {
+        "field": "related.user",
+        "value": ["{{{source.user.name}}}"],
+        "allow_duplicates": false,
+        "if": "ctx.source?.user?.name != null"
+      }
+    },
+
+    { "set": { "field": "event.kind", "value": "event", "if": "ctx.event?.kind == null" } },
+
+    {
+      "geoip": {
+        "description": "The cef package enriches on the way in. Without these a rescued document has no city, no coordinates and no ASN, and would look empty on exactly the map panels these events belong on.",
+        "field": "source.ip", "target_field": "source.geo", "ignore_missing": true
+      }
+    },
+    { "geoip": { "field": "destination.ip", "target_field": "destination.geo", "ignore_missing": true } },
+    { "geoip": { "field": "source.ip", "target_field": "source.as", "database_file": "GeoLite2-ASN.mmdb", "properties": ["asn", "organization_name"], "ignore_missing": true } },
+    { "geoip": { "field": "destination.ip", "target_field": "destination.as", "database_file": "GeoLite2-ASN.mmdb", "properties": ["asn", "organization_name"], "ignore_missing": true } },
+    { "rename": { "field": "source.as.asn", "target_field": "source.as.number", "ignore_missing": true } },
+    { "rename": { "field": "source.as.organization_name", "target_field": "source.as.organization.name", "ignore_missing": true } },
+    { "rename": { "field": "destination.as.asn", "target_field": "destination.as.number", "ignore_missing": true } },
+    { "rename": { "field": "destination.as.organization_name", "target_field": "destination.as.organization.name", "ignore_missing": true } },
+    { "community_id": { "ignore_missing": true, "ignore_failure": true } },
+
+    { "pipeline": { "name": "unifi-cef-common", "if": "ctx.observer?.vendor == 'Ubiquiti'" } },
+
+    { "remove": { "field": "_tmp", "ignore_missing": true, "ignore_failure": true } },
+    {
+      "script": {
+        "description": "Drop the tag the iptables input stamped on it. The document is a cef.log document now, and leaving 'iptables' on it would put it in the results of every dashboard filtered on that tag.",
+        "lang": "painless",
+        "source": "if (ctx.tags instanceof List) { ctx.tags.removeIf(t -> t == 'iptables'); }",
+        "ignore_failure": true
+      }
+    },
+    {
+      "append": {
+        "description": "So a rescued document is distinguishable from one that arrived on the right port in the first place.",
+        "field": "tags",
+        "value": "unifi-cef-rescued",
+        "allow_duplicates": false
+      }
+    }
+  ],
+  "on_failure": [
+    { "remove": { "field": "_tmp", "ignore_failure": true } },
+    { "set": { "field": "event.kind", "value": "pipeline_error" } },
+    {
+      "append": {
+        "field": "error.message",
+        "value": "unifi-cef-rescue: processor '{{{ _ingest.on_failure_processor_type }}}' failed with '{{{ _ingest.on_failure_message }}}'"
+      }
+    }
+  ]
+}

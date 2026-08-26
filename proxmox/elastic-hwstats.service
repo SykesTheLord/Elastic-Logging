@@ -1,0 +1,16 @@
+[Unit]
+Description=Collect temperature, SMART and ZFS telemetry for Elastic
+Documentation=file:///usr/local/bin/hwstats.py
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hwstats.py
+# smartctl needs raw device access, so this runs as root but nothing else.
+User=root
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/log/elastic

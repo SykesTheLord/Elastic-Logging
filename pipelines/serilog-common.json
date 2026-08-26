@@ -1,0 +1,100 @@
+{
+  "_meta": {
+    "managed_by": "homelab-logging"
+  },
+  "description": "Jellyfin and Kavita. Both are .NET/Serilog, but they do NOT share an output template. Jellyfin: [2026-08-21 14:30:22.123 +02:00] [INF] [17] SourceContext: message. Kavita: [Kavita] [2026-08-22 00:00:08.413 +00:00  91] [Information] SourceContext message — an app-name prefix, the thread id inside the timestamp bracket rather than its own, a full-word level, and a space after the source context instead of a colon. Nothing in Jellyfin's patterns matches that, and with ignore_failure the line would keep its raw message and gain no timestamp, level or logger at all.",
+  "processors": [
+    {
+      "set": {
+        "field": "event.timezone",
+        "value": "UTC",
+        "override": false
+      }
+    },
+    {
+      "grok": {
+        "field": "message",
+        "patterns": [
+          "^\\[Kavita\\] \\[%{SERILOGTS:_tmp.ts}%{SPACE}%{NUMBER:process.thread.id:long}\\] \\[%{WORD:_tmp.lvl}\\] %{DOTTEDCONTEXT:log.logger} %{MSGBODY:_tmp.msg}",
+          "^\\[Kavita\\] \\[%{SERILOGTS:_tmp.ts}%{SPACE}%{NUMBER:process.thread.id:long}\\] \\[%{WORD:_tmp.lvl}\\] %{MSGBODY:_tmp.msg}",
+          "^\\[%{SERILOGTS:_tmp.ts}\\] \\[%{WORD:_tmp.lvl}\\] \\[%{NUMBER:process.thread.id:long}\\] %{DATA:log.logger}: %{MSGBODY:_tmp.msg}",
+          "^\\[%{SERILOGTS:_tmp.ts}\\] \\[%{WORD:_tmp.lvl}\\] %{MSGBODY:_tmp.msg}",
+          "^\\[%{HOUR}:%{MINUTE}:%{SECOND}\\] \\[%{WORD:_tmp.lvl}\\] \\[%{NUMBER:process.thread.id:long}\\] %{DATA:log.logger}: %{MSGBODY:_tmp.msg}"
+        ],
+        "pattern_definitions": {
+          "SERILOGTS": "%{YEAR}-%{MONTHNUM}-%{MONTHDAY}[ T]%{HOUR}:%{MINUTE}:%{SECOND}(?:%{SPACE}%{ISO8601_TIMEZONE})?",
+          "DOTTEDCONTEXT": "[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_`+]+)+",
+          "MSGBODY": "[\\s\\S]*"
+        },
+        "ignore_failure": true,
+        "description": "The message body must be able to span newlines. Multiline joining happens in the agent, so by the time a stack trace reaches this pipeline it is one document whose message contains embedded newlines — but GREEDYDATA is `.*`, which does not cross them, and grok anchors `$` per line. The grok therefore *succeeded* on the first line alone and `set message copy_from _tmp.msg` then replaced the whole joined event with just that line, silently discarding every trace. MSGBODY is `(?s).*` so the body runs to the end of the document."
+      }
+    },
+    {
+      "date": {
+        "field": "_tmp.ts",
+        "target_field": "@timestamp",
+        "formats": [
+          "yyyy-MM-dd HH:mm:ss.SSS XXX",
+          "yyyy-MM-dd HH:mm:ss.SSS",
+          "yyyy-MM-dd HH:mm:ss XXX",
+          "yyyy-MM-dd HH:mm:ss",
+          "ISO8601"
+        ],
+        "timezone": "{{{event.timezone}}}",
+        "if": "ctx._tmp?.ts != null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "set": {
+        "field": "message",
+        "copy_from": "_tmp.msg",
+        "if": "ctx._tmp?.msg != null"
+      }
+    },
+    {
+      "script": {
+        "description": "Normalise the level. Serilog's file sink writes three-letter abbreviations, but Kavita configures it for full words — INF and Information are the same level and must not become two different values of log.level, which is a case-sensitive keyword.",
+        "lang": "painless",
+        "source": "def m = ['VRB':'trace','VERBOSE':'trace','DBG':'debug','DEBUG':'debug','INF':'info','INFO':'info','INFORMATION':'info','WRN':'warn','WARN':'warn','WARNING':'warn','ERR':'error','ERROR':'error','FTL':'fatal','FATAL':'fatal','CRITICAL':'fatal']; def l = ctx._tmp?.lvl; if (l != null) { if (ctx.log == null) { ctx.log = [:]; } def k = l.toUpperCase(); ctx.log.level = m.containsKey(k) ? m[k] : l.toLowerCase(); }"
+      }
+    },
+    {
+      "set": {
+        "field": "event.kind",
+        "value": "event",
+        "override": false
+      }
+    },
+    {
+      "set": {
+        "field": "event.type",
+        "value": [
+          "error"
+        ],
+        "if": "ctx.log?.level != null && (ctx.log.level == 'error' || ctx.log.level == 'fatal')"
+      }
+    },
+    {
+      "remove": {
+        "field": "_tmp",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "set": {
+        "field": "error.message",
+        "value": "serilog-common: {{{_ingest.on_failure_message}}}"
+      }
+    },
+    {
+      "remove": {
+        "field": "_tmp",
+        "ignore_missing": true
+      }
+    }
+  ]
+}

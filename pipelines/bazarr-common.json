@@ -1,0 +1,131 @@
+{
+  "_meta": {
+    "managed_by": "homelab-logging"
+  },
+  "description": "Bazarr. Unlike the rest of the *arr family Bazarr is Python, so its log uses Python logging with comma-separated milliseconds rather than the .NET pipe format. Both the modern pipe-delimited layout and the older dash layout are handled.",
+  "processors": [
+    {
+      "set": {
+        "field": "event.timezone",
+        "value": "UTC",
+        "override": false
+      }
+    },
+    {
+      "grok": {
+        "field": "message",
+        "patterns": [
+          "^%{PYTS:_tmp.ts}\\|%{SPACE}%{WORD:_tmp.lvl}%{SPACE}\\|%{SPACE}%{DATA:log.logger}%{SPACE}\\|%{MSGBODY:_tmp.msg}",
+          "^%{PYTS:_tmp.ts} - %{DATA:log.logger}%{SPACE}\\(%{DATA}\\)%{SPACE}:%{SPACE}%{WORD:_tmp.lvl}%{SPACE}\\(%{DATA}\\)%{SPACE}:%{SPACE}%{MSGBODY:_tmp.msg}",
+          "^%{PYTS:_tmp.ts}%{SPACE}%{WORD:_tmp.lvl}%{SPACE}%{MSGBODY:_tmp.msg}"
+        ],
+        "pattern_definitions": {
+          "PYTS": "%{YEAR}-%{MONTHNUM}-%{MONTHDAY}[ T]%{HOUR}:%{MINUTE}:%{SECOND}",
+          "MSGBODY": "[\\s\\S]*"
+        },
+        "ignore_failure": true,
+        "description": "The message body must be able to span newlines. Multiline joining happens in the agent, so by the time a stack trace reaches this pipeline it is one document whose message contains embedded newlines — but GREEDYDATA is `.*`, which does not cross them, and grok anchors `$` per line. The grok therefore *succeeded* on the first line alone and `set message copy_from _tmp.msg` then replaced the whole joined event with just that line, silently discarding every trace. MSGBODY is `(?s).*` so the body runs to the end of the document."
+      }
+    },
+    {
+      "date": {
+        "field": "_tmp.ts",
+        "target_field": "@timestamp",
+        "formats": [
+          "yyyy-MM-dd HH:mm:ss,SSS",
+          "yyyy-MM-dd HH:mm:ss.SSS",
+          "yyyy-MM-dd HH:mm:ss",
+          "ISO8601"
+        ],
+        "timezone": "{{{event.timezone}}}",
+        "if": "ctx._tmp?.ts != null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "set": {
+        "field": "message",
+        "copy_from": "_tmp.msg",
+        "if": "ctx._tmp?.msg != null"
+      }
+    },
+    {
+      "set": {
+        "field": "log.level",
+        "copy_from": "_tmp.lvl",
+        "if": "ctx._tmp?.lvl != null"
+      }
+    },
+    {
+      "lowercase": {
+        "field": "log.level",
+        "ignore_missing": true
+      }
+    },
+    {
+      "script": {
+        "description": "Python level names to ECS",
+        "lang": "painless",
+        "source": "def m=['warning':'warn','critical':'fatal','exception':'error']; if (ctx.log?.level != null && m.containsKey(ctx.log.level)) { ctx.log.level = m[ctx.log.level]; }"
+      }
+    },
+    {
+      "gsub": {
+        "field": "message",
+        "pattern": "\\|\\s*$",
+        "replacement": "",
+        "description": "Bazarr's format string ends with a literal pipe",
+        "ignore_missing": true
+      }
+    },
+    {
+      "trim": {
+        "field": "log.logger",
+        "ignore_missing": true
+      }
+    },
+    {
+      "set": {
+        "field": "event.kind",
+        "value": "event",
+        "override": false
+      }
+    },
+    {
+      "set": {
+        "field": "event.module",
+        "value": "arr",
+        "override": false
+      }
+    },
+    {
+      "set": {
+        "field": "event.type",
+        "value": [
+          "error"
+        ],
+        "if": "ctx.log?.level != null && (ctx.log.level == 'error' || ctx.log.level == 'fatal')"
+      }
+    },
+    {
+      "remove": {
+        "field": "_tmp",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "set": {
+        "field": "error.message",
+        "value": "bazarr-common: {{{_ingest.on_failure_message}}}"
+      }
+    },
+    {
+      "remove": {
+        "field": "_tmp",
+        "ignore_missing": true
+      }
+    }
+  ]
+}

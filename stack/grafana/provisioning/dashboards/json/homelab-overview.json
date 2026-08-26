@@ -1,0 +1,1611 @@
+{
+  "uid": "homelab-overview",
+  "title": "Homelab Overview",
+  "description": "Proxmox hardware, VM services and application logs, from Elasticsearch.",
+  "tags": [
+    "homelab",
+    "elastic"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "1h"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "datasource": {
+          "type": "elasticsearch",
+          "uid": "es-logs"
+        },
+        "query": "{\"find\":\"terms\",\"field\":\"host.name\"}",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Log events (range)",
+      "description": "Every document in logs-* for the selected time range.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Errors",
+      "description": "log.level of error or worse, across every dataset.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "log.level:(error OR fatal OR critical) OR event.kind:pipeline_error",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 100
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Hottest disk",
+      "description": "Peak SMART temperature across all Proxmox disks.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "event.dataset:proxmox_hw AND hw.kind:disk",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "max",
+              "field": "hw.disk.celsius"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 45
+              },
+              {
+                "color": "red",
+                "value": 55
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Failed systemd units",
+      "description": "Distinct units in the failed state, from the linux.service metricset. Any non-zero value is worth a look.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-metrics"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-metrics"
+          },
+          "query": "system.service.state:failed",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "cardinality",
+              "field": "system.service.name"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log volume by source",
+      "description": "Stacked count per dataset. Use this to spot an app that has started screaming.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "event.dataset",
+              "settings": {
+                "size": "12",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 100,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": false,
+            "lineInterpolation": "linear",
+            "barAlignment": 0,
+            "axisSoftMin": null,
+            "axisSoftMax": null,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors by source",
+      "description": "Error-and-above only.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 4,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "log.level:(error OR fatal OR critical) OR event.kind:pipeline_error",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "event.dataset",
+              "settings": {
+                "size": "8",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": false,
+            "lineInterpolation": "smooth",
+            "barAlignment": 0,
+            "axisSoftMin": null,
+            "axisSoftMax": null,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxmox temperatures",
+      "description": "lm-sensors readings, one series per labelled input.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "event.dataset:proxmox_hw AND hw.kind:temperature",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "hw.sensor.celsius"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "hw.sensor.label",
+              "settings": {
+                "size": "12",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": false,
+            "lineInterpolation": "smooth",
+            "barAlignment": 0,
+            "axisSoftMin": null,
+            "axisSoftMax": null,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Disk temperatures",
+      "description": "SMART temperature per physical disk.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "event.dataset:proxmox_hw AND hw.kind:disk",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "hw.disk.celsius"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "hw.disk.device",
+              "settings": {
+                "size": "12",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": false,
+            "lineInterpolation": "smooth",
+            "barAlignment": 0,
+            "axisSoftMin": null,
+            "axisSoftMax": null,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Disk health (SMART)",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "description": "Latest SMART summary per device. Anything other than a green PASSED, or a non-zero reallocated/pending count, wants attention.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "event.dataset:proxmox_hw AND hw.kind:disk",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "max",
+              "field": "hw.disk.celsius"
+            },
+            {
+              "id": "4",
+              "type": "max",
+              "field": "hw.disk.power_on_hours"
+            },
+            {
+              "id": "5",
+              "type": "max",
+              "field": "hw.disk.reallocated_sectors"
+            },
+            {
+              "id": "6",
+              "type": "max",
+              "field": "hw.disk.pending_sectors"
+            },
+            {
+              "id": "7",
+              "type": "max",
+              "field": "hw.disk.percentage_used"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "hw.disk.device",
+              "settings": {
+                "size": "20",
+                "order": "desc",
+                "orderBy": "_term",
+                "min_doc_count": "1"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max hw.disk.celsius"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Temp"
+              },
+              {
+                "id": "unit",
+                "value": "celsius"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 45
+                    },
+                    {
+                      "color": "red",
+                      "value": 55
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max hw.disk.power_on_hours"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Powered on (h)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max hw.disk.reallocated_sectors"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Reallocated"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max hw.disk.pending_sectors"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Pending"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "red",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Max hw.disk.percentage_used"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "SSD wear"
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 80
+                    },
+                    {
+                      "color": "red",
+                      "value": 95
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "hw.disk.device"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Device"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Network throughput — Proxmox",
+      "description": "In and out are both bytes, so they share one axis. Never split them onto a second y-scale.",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-metrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-metrics"
+          },
+          "query": "event.dataset:system.network AND host.name:*",
+          "alias": "{{term host.name}} in",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "system.network.in.bytes"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "host.name",
+              "settings": {
+                "size": "6",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        },
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-metrics"
+          },
+          "query": "event.dataset:system.network AND host.name:*",
+          "alias": "{{term host.name}} out",
+          "refId": "B",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "avg",
+              "field": "system.network.out.bytes"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "host.name",
+              "settings": {
+                "size": "6",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "pointSize": 8,
+            "spanNulls": false,
+            "lineInterpolation": "smooth",
+            "barAlignment": 0,
+            "axisSoftMin": null,
+            "axisSoftMax": null,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "table",
+      "title": "Systemd units not active",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-metrics"
+      },
+      "description": "Units whose state is anything but active, newest sample first. Empty is the healthy answer.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-metrics"
+          },
+          "query": "NOT system.service.state:active",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "4",
+              "type": "terms",
+              "field": "host.name",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_term",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "system.service.name",
+              "settings": {
+                "size": "30",
+                "order": "desc",
+                "orderBy": "_term",
+                "min_doc_count": "1"
+              }
+            },
+            {
+              "id": "5",
+              "type": "terms",
+              "field": "system.service.sub_state",
+              "settings": {
+                "size": "6",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": false,
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host.name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Host"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "system.service.name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Unit"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "system.service.sub_state"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Sub-state"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "failed": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "dead": {
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "exited": {
+                        "color": "text",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Count"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Samples"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "table",
+      "title": "Errors by source and host",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "description": "Where the errors actually are. Grouped by dataset, then by the two different ways a document says where it came from: agent-collected logs set host.name, while anything pushed to a UDP listener — the QNAP, every UniFi device — sets observer.name and no host.name at all. Both columns use a missing bucket, because a terms aggregation silently drops documents that lack the field, and grouping on host.name alone would leave every network device off the table rather than showing it with the column blank. Counts documents the ingest pipeline failed to parse as well as error-level logs: those carry no log.level, and a parse failure is an error worth seeing here.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "log.level:(error OR fatal OR critical) OR event.kind:pipeline_error",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "count"
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "event.dataset",
+              "settings": {
+                "size": "25",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1",
+                "missing": "(none)"
+              }
+            },
+            {
+              "id": "4",
+              "type": "terms",
+              "field": "host.name",
+              "settings": {
+                "size": "15",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1",
+                "missing": "—"
+              }
+            },
+            {
+              "id": "5",
+              "type": "terms",
+              "field": "observer.name",
+              "settings": {
+                "size": "10",
+                "order": "desc",
+                "orderBy": "_count",
+                "min_doc_count": "1",
+                "missing": "—"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "inspect": false,
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "event.dataset"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Source"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host.name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Agent host"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "observer.name"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Network device"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Count"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Errors"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 25
+                    },
+                    {
+                      "color": "red",
+                      "value": 200
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Recent errors",
+      "datasource": {
+        "type": "elasticsearch",
+        "uid": "es-logs"
+      },
+      "description": "Live error stream across Proxmox, the VMs and the app TCP intake.",
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 24,
+        "h": 11
+      },
+      "maxDataPoints": 100,
+      "targets": [
+        {
+          "datasource": {
+            "type": "elasticsearch",
+            "uid": "es-logs"
+          },
+          "query": "log.level:(error OR fatal OR critical) OR event.kind:pipeline_error",
+          "alias": "",
+          "refId": "A",
+          "metrics": [
+            {
+              "id": "1",
+              "type": "logs",
+              "settings": {
+                "limit": "300"
+              }
+            }
+          ],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "@timestamp",
+              "settings": {
+                "interval": "auto",
+                "min_doc_count": "0",
+                "trimEdges": "0"
+              }
+            }
+          ],
+          "timeField": "@timestamp"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    }
+  ]
+}

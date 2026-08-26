@@ -1,0 +1,14 @@
+# Secrets and key material — never commit these.
+# stack/.env holds every password plus the Fleet Server service token;
+# stack/certs/ holds the CA private key that every enrolled agent trusts.
+stack/.env
+stack/certs/
+stack/certs.bak-*
+
+# Runtime state
+**/__pycache__/
+*.pyc
+
+# Generated per-host dashboards — rebuilt from Fleet by stack/gen-dashboards.py,
+# and specific to one deployment's hostnames.
+stack/grafana/provisioning/dashboards/json/generated/

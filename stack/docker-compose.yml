@@ -1,0 +1,178 @@
+name: elastic-logging
+
+x-logging: &default-logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+services:
+
+  # ───────────────────────────────────────────────────────────── Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: elasticsearch
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - node.name=elasticsearch
+      - cluster.name=homelab
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - ES_JAVA_OPTS=-Xms${ES_HEAP} -Xmx${ES_HEAP}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.key=certs/elasticsearch/elasticsearch.key
+      - xpack.security.http.ssl.certificate=certs/elasticsearch/elasticsearch.crt
+      - xpack.security.http.ssl.certificate_authorities=certs/ca/ca.crt
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.security.transport.ssl.key=certs/elasticsearch/elasticsearch.key
+      - xpack.security.transport.ssl.certificate=certs/elasticsearch/elasticsearch.crt
+      - xpack.security.transport.ssl.certificate_authorities=certs/ca/ca.crt
+      # Guard against a stray `DELETE /*` wiping the cluster.
+      - action.destructive_requires_name=true
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+      - ./certs:/usr/share/elasticsearch/config/certs:ro
+    ports:
+      - "${ES_PORT}:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --cacert config/certs/ca/ca.crt -u elastic:${ELASTIC_PASSWORD} https://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
+  # ────────────────────────────────────────────────────────────────── Kibana
+  # Needed even though you asked for Grafana: Fleet (agent management) lives
+  # here, and it is a far better log explorer than Grafana's ES datasource.
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
+    container_name: kibana
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    environment:
+      - SERVERNAME=kibana
+      - ELASTICSEARCH_HOSTS=https://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/certs/ca/ca.crt
+      - SERVER_SSL_ENABLED=true
+      - SERVER_SSL_CERTIFICATE=/certs/kibana/kibana.crt
+      - SERVER_SSL_KEY=/certs/kibana/kibana.key
+      - SERVER_PUBLICBASEURL=https://${STACK_IP}:${KIBANA_PORT}
+      - XPACK_SECURITY_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY}
+      - XPACK_REPORTING_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY}
+      # Consumed by kibana.yml via ${...} interpolation. Kibana resolves those
+      # against its own environment and exits on the first one it cannot find,
+      # so every variable kibana.yml mentions has to appear here.
+      - STACK_IP=${STACK_IP}
+      - ES_PORT=${ES_PORT}
+      - KIBANA_PORT=${KIBANA_PORT}
+      - FLEET_PORT=${FLEET_PORT}
+      - ES_CA_FINGERPRINT=${ES_CA_FINGERPRINT}
+    volumes:
+      - ./certs:/certs:ro
+      - ./kibana/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+      - kibanadata:/usr/share/kibana/data
+    ports:
+      - "${KIBANA_PORT}:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -k https://localhost:5601/api/status | grep -q '\"level\":\"available\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
+
+  # ─────────────────────────────────────────────────────────── Fleet Server
+  # Central control plane for every Elastic Agent on Proxmox and the VMs.
+  fleet-server:
+    image: docker.elastic.co/elastic-agent/elastic-agent:${STACK_VERSION}
+    container_name: fleet-server
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+      kibana:        { condition: service_healthy }
+    environment:
+      - FLEET_SERVER_ENABLE=1
+      - FLEET_SERVER_ELASTICSEARCH_HOST=https://elasticsearch:9200
+      - FLEET_SERVER_ELASTICSEARCH_CA=/certs/ca/ca.crt
+      - FLEET_SERVER_SERVICE_TOKEN=${FLEET_SERVER_SERVICE_TOKEN}
+      - FLEET_SERVER_POLICY_ID=fleet-server-policy
+      - FLEET_SERVER_CERT=/certs/fleet-server/fleet-server.crt
+      - FLEET_SERVER_CERT_KEY=/certs/fleet-server/fleet-server.key
+      - FLEET_URL=https://${STACK_IP}:${FLEET_PORT}
+      # On startup the agent enrols itself against the Fleet Server it is
+      # about to become, over TLS. Without the CA here that handshake fails
+      # with "x509: certificate signed by unknown authority" and the container
+      # sits in a retry loop reporting DEGRADED forever.
+      - FLEET_CA=/certs/ca/ca.crt
+    volumes:
+      - ./certs:/certs:ro
+    ports:
+      - "${FLEET_PORT}:8220"
+
+  # ──────────────────────────────────────────────────────────────── Logstash
+  # Sole job: accept application logs over TCP and land them in data streams.
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${STACK_VERSION}
+    container_name: logstash
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    environment:
+      - LS_JAVA_OPTS=-Xms${LS_HEAP} -Xmx${LS_HEAP}
+      - ELASTIC_USER=logstash_writer
+      - ELASTIC_PASSWORD=${LOGSTASH_WRITER_PASSWORD}
+    volumes:
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/config/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./certs:/certs:ro
+      - lsdata:/usr/share/logstash/data
+    ports:
+      - "${LOGSTASH_TCP_PORT}:5000"     # plain TCP, LAN only
+      - "${LOGSTASH_TLS_PORT}:5001"     # TLS
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9600/_node/pipelines | grep -q app_tcp"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  # ───────────────────────────────────────────────────────────────── Grafana
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    container_name: grafana
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://${STACK_IP}:${GRAFANA_PORT}
+      # Referenced by the provisioned datasources.
+      - ES_URL=https://elasticsearch:9200
+      - ES_READER_USER=grafana_reader
+      - ES_READER_PASSWORD=${GRAFANA_READER_PASSWORD}
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./certs/ca:/etc/grafana/certs:ro
+    ports:
+      - "${GRAFANA_PORT}:3000"
+
+volumes:
+  esdata:
+  kibanadata:
+  lsdata:
+  grafanadata:

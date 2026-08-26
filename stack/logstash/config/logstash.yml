@@ -1,0 +1,9 @@
+node.name: logstash
+# api.http.host, not http.host — the old name was removed in Logstash 8 and
+# setting it makes 9.x refuse to start. Port 9600 is not published in
+# docker-compose.yml, so this stays on the compose network for the healthcheck.
+api.http.host: "0.0.0.0"
+# Pipeline definitions live in pipelines.yml.
+config.reload.automatic: true
+config.reload.interval: 30s
+log.level: info

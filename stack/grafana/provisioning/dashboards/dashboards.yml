@@ -1,0 +1,16 @@
+apiVersion: 1
+providers:
+  - name: homelab
+    orgId: 1
+    folder: Homelab
+    type: file
+    disableDeletion: false
+    # allowUiUpdates lets you save edits in the UI, but the file still wins:
+    # whenever its contents change, the provisioner overwrites the dashboard
+    # within updateIntervalSeconds. Grafana compares a checksum, not mtime, so
+    # a restored or git-checked-out file is picked up too. "Save As" under a
+    # new name for anything you want to keep.
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

@@ -1,0 +1,12 @@
+{
+  "_meta": { "managed_by": "homelab-logging" },
+  "description": "Fleet appends a call to this pipeline to the end of the cef package pipeline. Guarded on the vendor so that adding a second CEF source later — any appliance at all — is unaffected by UniFi-specific normalisation.",
+  "processors": [
+    {
+      "pipeline": {
+        "name": "unifi-cef-common",
+        "if": "ctx.observer?.vendor == 'Ubiquiti'"
+      }
+    }
+  ]
+}

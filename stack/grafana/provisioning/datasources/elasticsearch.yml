@@ -1,0 +1,44 @@
+apiVersion: 1
+
+# Credentials and the CA come from the container environment / mounted certs,
+# so nothing secret is committed here.
+datasources:
+  - name: Elasticsearch Logs
+    uid: es-logs
+    type: elasticsearch
+    access: proxy
+    url: https://elasticsearch:9200
+    isDefault: true
+    basicAuth: true
+    basicAuthUser: grafana_reader
+    jsonData:
+      index: "logs-*"
+      timeField: "@timestamp"
+      # Lets the Logs panel colour-code severity and render the message body.
+      logMessageField: message
+      logLevelField: log.level
+      maxConcurrentShardRequests: 5
+      includeFrozen: false
+      tlsAuthWithCACert: true
+    secureJsonData:
+      basicAuthPassword: $__env{ES_READER_PASSWORD}
+      tlsCACert: $__file{/etc/grafana/certs/ca.crt}
+    editable: true
+
+  - name: Elasticsearch Metrics
+    uid: es-metrics
+    type: elasticsearch
+    access: proxy
+    url: https://elasticsearch:9200
+    basicAuth: true
+    basicAuthUser: grafana_reader
+    jsonData:
+      index: "metrics-*"
+      timeField: "@timestamp"
+      maxConcurrentShardRequests: 5
+      includeFrozen: false
+      tlsAuthWithCACert: true
+    secureJsonData:
+      basicAuthPassword: $__env{ES_READER_PASSWORD}
+      tlsCACert: $__file{/etc/grafana/certs/ca.crt}
+    editable: true

@@ -1,0 +1,245 @@
+{
+  "_meta": { "managed_by": "homelab-logging" },
+  "description": "Normalise UniFi CEF events (Network 10.x / UniFi OS 5.x) into ECS. Shared by logs-cef.log@custom, which handles the live feed, and unifi-cef-rescue, which re-parses events that were mis-delivered to the iptables listener. Keyed on the numeric CEF Event Class ID rather than the human-readable Name: Ubiquiti keeps the IDs stable across releases and rewords the names freely.",
+  "processors": [
+    {
+      "date": {
+        "description": "UNIFIutcTime is an explicit UTC instant. The cef package instead parses the BSD syslog header, which carries no offset and is read as UTC, so without this every event lands shifted by the gateway's own UTC offset.",
+        "field": "cef.extensions.UNIFIutcTime",
+        "target_field": "@timestamp",
+        "formats": ["ISO8601"],
+        "if": "ctx.cef?.extensions?.UNIFIutcTime != null",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "set": {
+        "description": "The raw line, wherever it still is. unifi-cef-rescue sets this itself; on the live path it comes from event.original, which survives only because the cef stream sets preserve_original_event. The message fallback is guarded on the line actually looking like CEF, because on a decoded event message holds the msg= text and groking that for a hostname would invent one.",
+        "field": "_tmp.raw",
+        "copy_from": "event.original",
+        "if": "ctx._tmp?.raw == null && ctx.event?.original != null"
+      }
+    },
+    {
+      "set": {
+        "field": "_tmp.raw",
+        "copy_from": "message",
+        "if": "ctx._tmp?.raw == null && ctx.message instanceof String && ctx.message.contains('CEF:')"
+      }
+    },
+
+    {
+      "set": {
+        "description": "Device identity, most specific source first. Every adopted device sends to the collector directly, so without this a multi-device site is a single undifferentiated stream.",
+        "field": "observer.name",
+        "copy_from": "cef.extensions.UNIFIdeviceName",
+        "if": "ctx.observer?.name == null && ctx.cef?.extensions?.UNIFIdeviceName != null"
+      }
+    },
+    {
+      "set": {
+        "field": "observer.name",
+        "copy_from": "cef.extensions.UNIFIhost",
+        "if": "ctx.observer?.name == null && ctx.cef?.extensions?.UNIFIhost != null"
+      }
+    },
+    {
+      "grok": {
+        "description": "Last resort: the syslog hostname ahead of the CEF header. Only reachable when the input sets preserve_original_event, because the cef package removes event.original before this pipeline runs otherwise. Handles both framings — UniFi is BSD-style on some feeds and RFC 5424-ish on others.",
+        "field": "_tmp.raw",
+        "patterns": [
+          "^<%{NONNEGINT}>%{NONNEGINT} %{TIMESTAMP_ISO8601} %{HOSTNAME:observer.name} ",
+          "^<%{NONNEGINT}>%{SYSLOGTIMESTAMP} %{HOSTNAME:observer.name} ",
+          "^%{SYSLOGTIMESTAMP} %{HOSTNAME:observer.name} ",
+          "^%{HOSTNAME:observer.name} CEF:"
+        ],
+        "if": "ctx.observer?.name == null && ctx._tmp?.raw != null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "append": {
+        "field": "observer.ip",
+        "value": ["{{{cef.extensions.UNIFIdeviceIp}}}"],
+        "allow_duplicates": false,
+        "if": "ctx.cef?.extensions?.UNIFIdeviceIp != null"
+      }
+    },
+    {
+      "set": {
+        "field": "observer.mac",
+        "copy_from": "cef.extensions.UNIFIdeviceMac",
+        "if": "ctx.cef?.extensions?.UNIFIdeviceMac != null"
+      }
+    },
+    {
+      "gsub": {
+        "description": "ECS wants dash-separated uppercase; UniFi sends colon-separated lowercase.",
+        "field": "observer.mac",
+        "pattern": ":",
+        "replacement": "-",
+        "ignore_missing": true
+      }
+    },
+    { "uppercase": { "field": "observer.mac", "ignore_missing": true } },
+
+    {
+      "script": {
+        "description": "ECS categorisation from the stable Event Class IDs. 201 threat detected/blocked, 400/401 WiFi client connect/disconnect, 544 admin accessed UniFi Network — 544 in particular is the highest-value detection surface on this feed after Security Bulletin 064.",
+        "lang": "painless",
+        "params": {
+          "classes": {
+            "201": { "kind": "alert",  "category": ["intrusion_detection", "network"], "type": ["denied"] },
+            "400": { "kind": "event",  "category": ["network", "session"],             "type": ["connection", "start"] },
+            "401": { "kind": "event",  "category": ["network", "session"],             "type": ["connection", "end"] },
+            "544": { "kind": "event",  "category": ["authentication"],                 "type": ["info"] }
+          }
+        },
+        "source": "def code = ctx.event?.code; if (code == null) { return; } def c = params.classes[code]; if (c == null) { return; } if (ctx.event == null) { ctx.event = [:]; } ctx.event.kind = c.kind; ctx.event.category = new ArrayList(c.category); ctx.event.type = new ArrayList(c.type);",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "script": {
+        "description": "Disposition. act= is a real word on this feed (blocked/allowed/denied), unlike the single letter the iptables feed carries.",
+        "lang": "painless",
+        "source": "def a = ctx.event?.action; if (a == null) { return; } a = a.toLowerCase(); if (ctx.event.type == null) { ctx.event.type = new ArrayList(); } if (a.contains('block') || a.contains('den') || a.contains('drop') || a.contains('reject')) { if (!ctx.event.type.contains('denied')) { ctx.event.type.add('denied'); } ctx.event.outcome = 'success'; } else if (a.contains('allow') || a.contains('accept') || a.contains('permit')) { if (!ctx.event.type.contains('allowed')) { ctx.event.type.add('allowed'); } ctx.event.outcome = 'success'; }",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "script": {
+        "description": "incoming/outgoing -> the ECS network.direction vocabulary.",
+        "lang": "painless",
+        "source": "def d = ctx.cef?.extensions?.UNIFIdirection; if (d == null) { return; } d = d.toLowerCase(); if (ctx.network == null) { ctx.network = [:]; } if (d == 'incoming' || d == 'inbound' || d == 'ingress') { ctx.network.direction = 'inbound'; } else if (d == 'outgoing' || d == 'outbound' || d == 'egress') { ctx.network.direction = 'outbound'; } else if (d == 'internal') { ctx.network.direction = 'internal'; }",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "convert": {
+        "description": "Totals only. UNIFIbytesSent/Received are not stated to be relative to any particular endpoint, so mapping them onto source.bytes/destination.bytes would be a guess — they stay in cef.extensions.",
+        "field": "cef.extensions.UNIFItotalBytes",
+        "target_field": "network.bytes",
+        "type": "long",
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+    {
+      "convert": {
+        "field": "cef.extensions.UNIFItotalPackets",
+        "target_field": "network.packets",
+        "type": "long",
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "set": {
+        "description": "UNIFIsrcRegion is an ISO 3166-1 alpha-2 code. Guarded so a longer region string never lands in a field that must be two letters.",
+        "field": "source.geo.country_iso_code",
+        "copy_from": "cef.extensions.UNIFIsrcRegion",
+        "if": "ctx.source?.geo?.country_iso_code == null && ctx.cef?.extensions?.UNIFIsrcRegion instanceof String && ctx.cef.extensions.UNIFIsrcRegion ==~ /^[A-Z]{2}$/"
+      }
+    },
+    {
+      "set": {
+        "field": "observer.egress.zone",
+        "copy_from": "cef.extensions.UNIFIdstZone",
+        "if": "ctx.cef?.extensions?.UNIFIdstZone != null"
+      }
+    },
+    {
+      "set": {
+        "field": "observer.ingress.zone",
+        "copy_from": "cef.extensions.UNIFIsrcZone",
+        "if": "ctx.cef?.extensions?.UNIFIsrcZone != null"
+      }
+    },
+
+    {
+      "set": {
+        "description": "Signature identity. UNIFIthreatType is the Suricata 8 spelling on consoles that have completed the migration; UNIFIipsSignature is what 10.5 sends today.",
+        "field": "rule.name",
+        "copy_from": "cef.extensions.UNIFIipsSignature",
+        "if": "ctx.cef?.extensions?.UNIFIipsSignature != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.name",
+        "copy_from": "cef.extensions.UNIFIthreatType",
+        "if": "ctx.rule?.name == null && ctx.cef?.extensions?.UNIFIthreatType != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.id",
+        "copy_from": "cef.extensions.UNIFIipsSignatureId",
+        "if": "ctx.cef?.extensions?.UNIFIipsSignatureId != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.ruleset",
+        "copy_from": "cef.extensions.UNIFIpolicyName",
+        "if": "ctx.cef?.extensions?.UNIFIpolicyName != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.category",
+        "copy_from": "cef.extensions.UNIFIpolicyType",
+        "if": "ctx.cef?.extensions?.UNIFIpolicyType != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.category",
+        "copy_from": "cef.extensions.UNIFIthreatCategory",
+        "if": "ctx.rule?.category == null && ctx.cef?.extensions?.UNIFIthreatCategory != null"
+      }
+    },
+    {
+      "set": {
+        "description": "Only when the event actually describes a rule. A 544 admin-access event has a UNIFIcategory of System, which is not a rule category and does not belong under rule.*.",
+        "field": "rule.category",
+        "copy_from": "cef.extensions.UNIFIcategory",
+        "if": "ctx.rule?.category == null && ctx.cef?.extensions?.UNIFIcategory != null && (ctx.rule?.name != null || ctx.rule?.ruleset != null)"
+      }
+    },
+
+    {
+      "script": {
+        "description": "UNIFIrisk is a word; event.risk_score is a number, which is what a dashboard can sort and threshold on.",
+        "lang": "painless",
+        "params": { "risk": { "low": 25, "medium": 50, "high": 75, "critical": 100 } },
+        "source": "def r = ctx.cef?.extensions?.UNIFIrisk; if (r == null) { return; } def v = params.risk[r.toLowerCase()]; if (v != null) { if (ctx.event == null) { ctx.event = [:]; } ctx.event.risk_score = (double) v; }",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "script": {
+        "description": "related.* is what makes a pivot across devices work — one query finds an address whether the UDM Pro or the UX7 reported it.",
+        "lang": "painless",
+        "source": "if (ctx.related == null) { ctx.related = [:]; } def ips = new ArrayList(); if (ctx.related.ip instanceof List) { ips.addAll(ctx.related.ip); } for (def v : [ctx.source?.ip, ctx.destination?.ip]) { if (v != null && !ips.contains(v)) { ips.add(v); } } if (ctx.observer?.ip instanceof List) { for (def v : ctx.observer.ip) { if (v != null && !ips.contains(v)) { ips.add(v); } } } if (!ips.isEmpty()) { ctx.related.ip = ips; } def hosts = new ArrayList(); if (ctx.related.hosts instanceof List) { hosts.addAll(ctx.related.hosts); } if (ctx.observer?.name != null && !hosts.contains(ctx.observer.name)) { hosts.add(ctx.observer.name); } if (!hosts.isEmpty()) { ctx.related.hosts = hosts; }",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "remove": {
+        "description": "Only this key: unifi-cef-rescue keeps its own _tmp.* alive across the call to this pipeline and removes the object itself afterwards.",
+        "field": "_tmp.raw",
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    }
+  ]
+}

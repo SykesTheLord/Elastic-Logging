@@ -1,0 +1,12 @@
+/var/log/elastic/hwstats.ndjson {
+    size 50M
+    rotate 3
+    missingok
+    notifempty
+    compress
+    delaycompress
+    # Rename-and-recreate rather than copytruncate: filestream tracks inodes
+    # and handles rotation cleanly, whereas truncating a file it is mid-read
+    # loses lines.
+    create 0640 root adm
+}

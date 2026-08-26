@@ -1,0 +1,132 @@
+{
+  "_meta": { "managed_by": "homelab-logging" },
+  "description": "UniFi firewall logs as Network 10.x emits them. The iptables package was written against the 9.x BSD kernel framing; 10.x sends RFC 5424 with the rule label as APP-NAME and the rule description in DESCR=. Those lines still match the package's generic fallback pattern, so they parse without error while silently losing the event time, the device name, the rule identity and the disposition. This puts all four back. Everything is guarded on the field being unset, so 9.x-framed lines pass through untouched.",
+  "processors": [
+    {
+      "set": {
+        "description": "Fleet's .fleet_final_pipeline-1 removes event.original unless the preserve_original_event tag is set, so it is there during live ingest but gone from anything already indexed without that tag. The package's own header on_failure copies the whole line into message — which happens on exactly the documents whose framing it could not parse, so message carries the full raw line precisely when it is needed.",
+        "field": "_tmp.raw",
+        "copy_from": "event.original",
+        "if": "ctx.event?.original != null"
+      }
+    },
+    {
+      "set": {
+        "field": "_tmp.raw",
+        "copy_from": "message",
+        "if": "ctx._tmp?.raw == null && ctx.message != null"
+      }
+    },
+    {
+      "grok": {
+        "description": "RFC 5424 header. The package tries <PRI> immediately followed by a timestamp; 10.x puts the version digit in between, so its header grok falls through and the whole line is left in message.",
+        "field": "_tmp.raw",
+        "patterns": [
+          "^<%{NONNEGINT}>%{NONNEGINT} %{TIMESTAMP_ISO8601:_tmp.ts} %{HOSTNAME:_tmp.host} "
+        ],
+        "if": "ctx._tmp?.raw != null && ctx.observer?.name == null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "date": {
+        "description": "This timestamp carries a real offset, unlike the BSD one, so no timezone guessing is needed.",
+        "field": "_tmp.ts",
+        "target_field": "@timestamp",
+        "formats": ["ISO8601"],
+        "if": "ctx._tmp?.ts != null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "set": {
+        "description": "Device attribution. Every adopted device sends to the collector directly, so on a multi-device site this is the only thing separating the UDM Pro's drops from the UX7's.",
+        "field": "observer.name",
+        "copy_from": "_tmp.host",
+        "if": "ctx.observer?.name == null && ctx._tmp?.host != null"
+      }
+    },
+
+    {
+      "grok": {
+        "description": "The rule description — the name the rule actually has in the UniFi UI. The package never looks at DESCR= at all.",
+        "field": "_tmp.raw",
+        "patterns": ["DESCR=\"%{DATA:_tmp.descr}\""],
+        "if": "ctx._tmp?.raw != null",
+        "ignore_failure": true
+      }
+    },
+    {
+      "grok": {
+        "field": "_tmp.raw",
+        "patterns": ["\\[%{DATA:_tmp.label}\\]"],
+        "if": "ctx._tmp?.raw != null",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "script": {
+        "description": "Rule identity from the bracket label, which changed shape between releases. 9.x is <chain>-<number>-<disposition> (LAN_IN-2000-D). 10.x is <chain>-<kind>-<id> (LAN_IN-RET-20000), and the package's 9.x-shaped pattern reads that as rule_number=RET with event.action=20000 — a rule ID sitting in a disposition field, which is worse than leaving it empty. Distinguishing them on whether the last component is numeric is reliable because a disposition never is.",
+        "lang": "painless",
+        "source": "def lab = ctx._tmp?.label; if (lab == null) { return; } def parts = lab.splitOnToken('-'); if (parts.length < 3) { return; } def last = parts[parts.length - 1]; boolean lastNumeric = last.length() > 0; for (int i = 0; i < last.length(); i++) { if (!Character.isDigit(last.charAt(i))) { lastNumeric = false; break; } } if (ctx.iptables == null) { ctx.iptables = [:]; } if (ctx.iptables.ubiquiti == null) { ctx.iptables.ubiquiti = [:]; } def ub = ctx.iptables.ubiquiti; if (lastNumeric) { ub.rule_set = parts[0]; ub.rule_number = last; def kind = new StringBuilder(); for (int i = 1; i < parts.length - 1; i++) { if (kind.length() > 0) { kind.append('-'); } kind.append(parts[i]); } if (kind.length() > 0) { ub.rule_kind = kind.toString(); } if (ctx.event?.action == last) { ctx.event.remove('action'); } } else { if (ub.rule_set == null) { ub.rule_set = parts[0]; ub.rule_number = parts[1]; } if (ctx.event?.action == null) { if (ctx.event == null) { ctx.event = [:]; } ctx.event.action = last.toLowerCase(); } }",
+        "ignore_failure": true
+      }
+    },
+    {
+      "grok": {
+        "description": "Re-derive the zones, which the package only does for a rule_set it extracted itself.",
+        "field": "iptables.ubiquiti.rule_set",
+        "patterns": ["%{UBIQUITI_FIELD:iptables.ubiquiti.input_zone}-%{UBIQUITI_FIELD:iptables.ubiquiti.output_zone}"],
+        "pattern_definitions": { "UBIQUITI_FIELD": "[^-]*" },
+        "if": "ctx.iptables?.ubiquiti?.input_zone == null",
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "script": {
+        "description": "Disposition. On 10.x it is not in the log line at all except as the rule description's leading word — which is exactly why the convention is to name rules 'Block …' and 'Allow …'. Also expands 'r', which the package's own map omits (it covers only d and a).",
+        "lang": "painless",
+        "source": "def act = ctx.event?.action; if (act == 'r') { act = 'reject'; } else if (act == null) { def n = ctx._tmp?.descr; if (n == null) { n = ctx.rule?.name; } if (n != null) { def w = n.toLowerCase(); if (w.startsWith('block') || w.startsWith('drop')) { act = 'drop'; } else if (w.startsWith('deny')) { act = 'deny'; } else if (w.startsWith('reject')) { act = 'reject'; } else if (w.startsWith('allow') || w.startsWith('accept') || w.startsWith('permit')) { act = 'accept'; } } } if (act == null) { return; } if (ctx.event == null) { ctx.event = [:]; } ctx.event.action = act; if (ctx.event.type == null) { ctx.event.type = new ArrayList(); } def denied = ['drop', 'deny', 'reject']; def allowed = ['accept', 'allow', 'permit']; if (denied.contains(act) && !ctx.event.type.contains('denied')) { ctx.event.type.add('denied'); } if (allowed.contains(act) && !ctx.event.type.contains('allowed')) { ctx.event.type.add('allowed'); }",
+        "ignore_failure": true
+      }
+    },
+
+    {
+      "set": {
+        "description": "The package derives rule.id and rule.name from the ubiquiti fields before this pipeline runs, so on a 10.x label it has already copied the mis-split values — rule.id ends up as 'RET'. Re-derive from the corrected fields. The chain is the parent grouping, which is what rule.ruleset means; rule.name is reserved for the name a human gave the rule.",
+        "field": "rule.ruleset",
+        "copy_from": "iptables.ubiquiti.rule_set",
+        "if": "ctx.iptables?.ubiquiti?.rule_set != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.id",
+        "copy_from": "iptables.ubiquiti.rule_number",
+        "if": "ctx.iptables?.ubiquiti?.rule_number != null"
+      }
+    },
+    {
+      "set": {
+        "field": "rule.name",
+        "copy_from": "_tmp.descr",
+        "if": "ctx._tmp?.descr != null"
+      }
+    },
+
+    {
+      "append": {
+        "description": "So a pivot on a device name works the same way it does on the CEF feed.",
+        "field": "related.hosts",
+        "value": ["{{{observer.name}}}"],
+        "allow_duplicates": false,
+        "if": "ctx.observer?.name != null"
+      }
+    },
+
+    { "remove": { "field": "_tmp", "ignore_missing": true, "ignore_failure": true } }
+  ]
+}

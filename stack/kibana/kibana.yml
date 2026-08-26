@@ -1,0 +1,57 @@
+server.host: "0.0.0.0"
+server.name: kibana
+server.publicBaseUrl: "https://${STACK_IP}:${KIBANA_PORT}"
+
+# Homelab: no need to phone home.
+telemetry.enabled: false
+telemetry.optIn: false
+
+# ─── Fleet ───────────────────────────────────────────────────────────────────
+# Integration packages are pulled from epr.elastic.co on first boot, so this
+# VM needs outbound internet the first time you start the stack (and whenever
+# you add a new integration). Everything after that is local.
+xpack.fleet.packages:
+  - { name: fleet_server,  version: latest }
+  - { name: elastic_agent, version: latest }
+  - { name: system,        version: latest }
+  - { name: journald,      version: latest }
+  - { name: docker,        version: latest }
+  - { name: log,           version: latest }
+  - { name: linux,         version: latest }
+  # Network-device receivers — see docs/network-devices.md
+  - { name: qnap_nas,      version: latest }
+  - { name: cef,           version: latest }
+  - { name: iptables,      version: latest }
+  - { name: netflow,       version: latest }
+
+# Where agents check in. Must match a SAN on the fleet-server certificate.
+xpack.fleet.fleetServerHosts:
+  - id: default-fleet-server
+    name: Default
+    is_default: true
+    host_urls: ["https://${STACK_IP}:${FLEET_PORT}"]
+
+# Where agents ship data. Agents trust Elasticsearch by CA fingerprint, which
+# saves distributing the CA file for the data path (enrollment still needs it).
+xpack.fleet.outputs:
+  - id: fleet-default-output
+    name: default
+    type: elasticsearch
+    is_default: true
+    is_default_monitoring: true
+    hosts: ["https://${STACK_IP}:${ES_PORT}"]
+    ca_trusted_fingerprint: "${ES_CA_FINGERPRINT}"
+
+# Only the Fleet Server policy is declared here — it is infrastructure and you
+# should never hand-edit it. The proxmox-host and media-vm policies are created
+# by fleet/setup-policies.sh instead, so they stay editable in the Fleet UI
+# without Kibana reverting your changes on every restart.
+xpack.fleet.agentPolicies:
+  - name: Fleet Server Policy
+    id: fleet-server-policy
+    namespace: default
+    monitoring_enabled: [logs, metrics]
+    is_default_fleet_server: true
+    package_policies:
+      - name: fleet_server-1
+        package: { name: fleet_server }

@@ -1,0 +1,5 @@
+- pipeline.id: app_tcp
+  path.config: "/usr/share/logstash/pipeline/app-tcp.conf"
+  pipeline.workers: 2
+  queue.type: persisted
+  queue.max_bytes: 1gb
