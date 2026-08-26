@@ -98,12 +98,44 @@ def add(name, policy_id, package, inputs):
 
 # ── Reusable input fragments ────────────────────────────────────────────────
 
+# Left to itself the filesystem metricset collects almost nothing worth having.
+# With no filesystem.ignore_types set, Metricbeat builds the ignore list from
+# every type marked `nodev` in /proc/filesystems — which is not just the pseudo
+# filesystems it is aiming at, but **nfs, nfs4, cifs and zfs as well**. A host
+# whose extra storage is a NAS mount or a ZFS pool therefore reports one
+# filesystem, the root one, and nothing anywhere says so: the metricset is
+# healthy, the agent is green, and the dashboard draws a correct-looking panel
+# with a single row.
+#
+# So the list is given explicitly. It is the nodev set minus the types that are
+# real storage — anything not named here is collected, which is why nfs4, cifs,
+# zfs, fuse.mergerfs and friends now appear. Mount points under /sys, /proc,
+# /dev, /etc, /lib and /snap are dropped separately by the package's own
+# default processor, so this only has to catch the pseudo filesystems mounted
+# somewhere else.
+FS_IGNORE_TYPES = [
+    "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs", "debugfs",
+    "devpts", "devtmpfs", "efivarfs", "fuse.gvfsd-fuse", "fuse.lxcfs",
+    "fuse.portal", "fusectl", "hugetlbfs", "mqueue", "nfsd", "nsfs", "overlay",
+    "pipefs", "proc", "pstore", "ramfs", "rpc_pipefs", "securityfs",
+    "selinuxfs", "squashfs", "sysfs", "tmpfs", "tracefs",
+]
+
 # The System integration ships a journald input and a logfile input that both
 # read syslog. On any systemd host that is the same data twice, so the file
 # reader goes off. winlog is Windows-only and never matches here.
 SYSTEM_INPUTS = {
     "system-logfile": {"enabled": False},
     "system-winlog": {"enabled": False},
+    # Only the one stream is named, which leaves cpu, memory, network, diskio,
+    # process and uptime at their package defaults rather than redeclaring them.
+    "system-system/metrics": {
+        "streams": {
+            "system.filesystem": {
+                "vars": {"filesystem.ignore_types": FS_IGNORE_TYPES},
+            },
+        },
+    },
 }
 
 # UniFi pushes logging site-wide and every adopted device sends to the collector

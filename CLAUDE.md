@@ -57,7 +57,8 @@ These look correct and silently do nothing:
   on a live stack, and neither does restarting the stack — the policies live in Fleet's
   saved objects, not in a file anything reads at boot. Use `fleet/migrate-media-paths.py`
   for the media log paths and multiline patterns, `fleet/migrate-unifi-inputs.py` for the
-  UniFi listeners, `fleet/toggle-stream.py`, or the Fleet UI.
+  UniFi listeners, `fleet/migrate-filesystem-types.py` for `FS_IGNORE_TYPES`,
+  `fleet/toggle-stream.py`, or the Fleet UI.
 - **Logstash's `data_stream_dataset` is not sprintf-templated.** Per-event routing needs
   `index =>` with `action => create`, plus `manage_template => false`.
 - **Agents trust Elasticsearch by CA fingerprint**, which only matches a CA present in
@@ -117,6 +118,14 @@ These look correct and silently do nothing:
   The integration splits them out of the rule set name on a hyphen; UniFi's chains
   use underscores (`LAN_IN`, `WAN_LOCAL`). A panel grouped on them draws an
   authoritative blank.
+- **The filesystem metricset ignores `nfs`, `cifs` and `zfs` by default.** With no
+  `filesystem.ignore_types` set, Metricbeat builds the ignore list from every type
+  marked `nodev` in `/proc/filesystems`, and those three are all nodev — so a host
+  reports its root filesystem and nothing else, with no error and a green agent.
+  Verified against 9.5.1: seven mounts on the host, two collected. `FS_IGNORE_TYPES`
+  in `setup-policies.py` names the pseudo filesystems explicitly instead. A disk with
+  no mounted filesystem (LVM-thin, a zvol, an unformatted spare) is out of reach of
+  this metricset regardless.
 - **`linux.service` is a *metrics* data stream.** systemd unit panels belong on the
   `es-metrics` datasource; on `es-logs` they return nothing, and a count panel with
   `min_doc_count: 0` then draws a confident flat zero rather than looking broken.

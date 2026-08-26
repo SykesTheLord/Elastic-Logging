@@ -583,8 +583,11 @@ def host_dashboard(agent, host_name, caps, stem):
                             "physical connection is not in any data collected here. "
                             "Usage is the peak over the selected range, not the value "
                             "right now, so a mount that filled and was cleared still "
-                            "shows its high-water mark; free is 1 - that. Unmounted "
-                            "disks do not appear at all.",
+                            "shows its high-water mark; free is 1 - that. "
+                            "Only nfs, cifs and zfs mounts on a policy carrying "
+                            "FS_IGNORE_TYPES appear — see fleet/migrate-filesystem-types.py "
+                            "if this shows one row and the host has more. A disk with no "
+                            "mounted filesystem never appears at all.",
                 overrides=[
                     rename("system.filesystem.device_name", "Disk"),
                     rename("system.filesystem.mount_point", "Mount point"),

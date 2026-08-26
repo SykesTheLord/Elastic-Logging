@@ -232,7 +232,8 @@ and the model caveats on NetFlow.
 > reads at boot. The `fleet/migrate-*.py` scripts exist for exactly this:
 > `migrate-media-paths.py` pushes the current `MEDIA_APPS` paths and multiline
 > patterns onto the live policies, `migrate-unifi-inputs.py` does the same for
-> the network listeners. Both take `--check`.
+> the network listeners, and `migrate-filesystem-types.py` does it for
+> `FS_IGNORE_TYPES`. All three take `--check`.
 
 
 `fleet/setup-policies.py` only ever **creates** policies — it leaves existing
@@ -256,6 +257,41 @@ Nothing needs restarting on the monitored host.
 Proxmox host on ZFS, on an HBA, or on plain disks has none — the metricset then
 errors on every collection interval. Turn it on only if the host really does
 run Linux software RAID.
+
+### Disks that do not show up
+
+The filesystem metricset has a default worth knowing about. With no
+`filesystem.ignore_types` set it ignores every type marked `nodev` in
+`/proc/filesystems` — which is meant to skip pseudo filesystems, but **`nfs`,
+`nfs4`, `cifs` and `zfs` are all marked `nodev` too**. A Proxmox host on ZFS, or
+any host with a NAS mount, then reports its root filesystem and nothing else.
+Nothing anywhere says so: the metricset does not error, the agent stays green,
+and the dashboard draws a healthy-looking panel with one row in it.
+
+`FS_IGNORE_TYPES` in `setup-policies.py` therefore names the ignored types
+explicitly — the pseudo filesystems, and nothing that is real storage. New
+deployments get it; existing ones need:
+
+```bash
+cd fleet
+./migrate-filesystem-types.py --check   # what differs
+./migrate-filesystem-types.py           # apply
+```
+
+Verify with the data rather than the agent's status, because the missing mounts
+were never an error:
+
+```bash
+curl -sk -u elastic:$ELASTIC_PASSWORD \
+  "https://localhost:9200/metrics-system.filesystem-*/_search" \
+  -H 'Content-Type: application/json' -d \
+  '{"size":0,"aggs":{"t":{"terms":{"field":"system.filesystem.type"}}}}'
+```
+
+A disk with **no mounted filesystem** stays invisible whatever you set here —
+an LVM-thin pool, a ZFS zvol backing a VM, an unformatted spare. There is no
+filesystem on it to measure. ZFS pool capacity comes from `hwstats.py` instead,
+on the ZFS pools panel; LVM-thin usage is not collected by anything here.
 
 ### Parsing
 
