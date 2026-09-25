@@ -22,7 +22,8 @@ curl -fsS -k -u "elastic:${ELASTIC_PASSWORD}" -H 'kbn-xsrf: true' \
 | STACK_IP="$STACK_IP" FLEET_PORT="$FLEET_PORT" python3 -c '
 import json, os, sys
 url = "https://%s:%s" % (os.environ["STACK_IP"], os.environ["FLEET_PORT"])
-script = {"proxmox-host": "proxmox", "media-vm": "vms", "stack-vm": "vms"}
+script = {"proxmox-host": "proxmox", "media-vm": "vms", "stack-vm": "vms",
+          "baseline": "vms"}
 for k in json.load(sys.stdin)["items"]:
     if not k.get("active"):
         continue

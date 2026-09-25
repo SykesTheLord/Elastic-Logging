@@ -224,6 +224,40 @@ Nothing is installed on the QNAP or the UniFi gear — they push. See
 [docs/network-devices.md](docs/network-devices.md) for the device-side settings
 and the model caveats on NetFlow.
 
+### Anything else — policy `baseline`
+
+For a machine that runs none of Docker, the media apps, or the stack itself —
+just a plain host you want visibility into. System metrics (CPU, memory,
+filesystem, diskio, network, processes, uptime) and the journal at error and
+above. Nothing app-specific, so nothing goes looking for a log path or a
+socket that will never exist on it.
+
+```bash
+# On a headless Arch Linux machine
+sudo ./vms/install-agent-arch.sh --url https://<STACK_IP>:8220 --token <token> --ca ./ca.crt
+
+# On a headless Ubuntu/Debian machine with nothing else running
+sudo ./vms/install-agent.sh --url https://<STACK_IP>:8220 --token <token> --ca ./ca.crt
+```
+
+`fleet/enrollment-tokens.sh` prints a `baseline` entry once the policy exists
+— see below for adding it to a stack that predates this policy.
+
+#### Adding the `baseline` policy to a stack that already exists
+
+`setup-policies.py` only ever *creates* policies it does not find, so
+re-running it is safe on a live stack — it will not touch `proxmox-host`,
+`media-vm` or `stack-vm`, and will create only the new `baseline` policy:
+
+```bash
+cd fleet
+./setup-policies.py
+```
+
+(equivalently, re-run `stack/bootstrap.sh`, which calls this script and is
+itself idempotent). Then fetch its enrollment token and enroll the machine as
+above.
+
 ## Changing what a policy collects
 
 > `setup-policies.py` creates policies; it never updates them. Once a policy

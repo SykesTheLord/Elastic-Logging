@@ -447,6 +447,18 @@ def stack_policy():
     network_receivers()
 
 
+def baseline_policy():
+    """A host that is neither the Proxmox host, a media VM, nor the stack VM —
+
+    no Docker, no *arr apps, nothing else this repo has a dedicated policy
+    for. System metrics and the journal, nothing more, so nothing here goes
+    looking for a log path or a socket that will never exist on it.
+    """
+    print("\n   baseline")
+    add("system", "baseline", "system", dict(SYSTEM_INPUTS))
+    add("journal-errors", "baseline", "journald", journald_errors())
+
+
 def main():
     fresh_pve = ensure_agent_policy(
         "proxmox-host", "proxmox-host", "Proxmox VE hypervisor")
@@ -454,6 +466,9 @@ def main():
         "media-vm", "media-vm", "Ubuntu/Debian VMs running the media stack")
     fresh_stack = ensure_agent_policy(
         "stack-vm", "stack-vm", "The Ubuntu VM running Elasticsearch, Kibana, Logstash and Grafana")
+    fresh_baseline = ensure_agent_policy(
+        "baseline", "baseline",
+        "Any other host — system metrics and the journal, no Docker or app-specific inputs")
 
     if fresh_pve:
         proxmox_policy()
@@ -461,8 +476,10 @@ def main():
         media_policy()
     if fresh_stack:
         stack_policy()
+    if fresh_baseline:
+        baseline_policy()
 
-    if not (fresh_pve or fresh_vm or fresh_stack):
+    if not (fresh_pve or fresh_vm or fresh_stack or fresh_baseline):
         print("   nothing to do")
     return 0
 
