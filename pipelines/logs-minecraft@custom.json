@@ -1,0 +1,107 @@
+{
+  "_meta": {
+    "managed_by": "homelab-logging"
+  },
+  "description": "Vanilla/Paper Minecraft Java Edition server, logs/latest.log: [10:15:31] [Server thread/INFO]: message. The bracketed field before the slash is the JVM thread, not a logger in the Serilog sense, but it plays the same role — 'Server thread' for normal ticks, 'Server thread/Async Chat Thread' etc for plugin work — so it is kept as log.logger.",
+  "processors": [
+    {
+      "set": {
+        "field": "event.timezone",
+        "value": "UTC",
+        "override": false
+      }
+    },
+    {
+      "grok": {
+        "field": "message",
+        "patterns": [
+          "^\\[%{TIME:_tmp.time}\\] \\[%{DATA:log.logger}/%{WORD:_tmp.lvl}\\]: %{MSGBODY:_tmp.msg}"
+        ],
+        "pattern_definitions": {
+          "TIME": "%{HOUR}:%{MINUTE}:%{SECOND}",
+          "MSGBODY": "[\\s\\S]*"
+        },
+        "ignore_failure": true,
+        "description": "MSGBODY, not GREEDYDATA — a crash's stack trace is joined into one multiline event before it reaches this pipeline, and GREEDYDATA stops at the first newline while grok anchors $ per line, so a plain %{GREEDYDATA:_tmp.msg}$ would match only the exception's first line and silently throw the trace away when 'set message copy_from _tmp.msg' runs below."
+      }
+    },
+    {
+      "set": {
+        "field": "_tmp.now",
+        "value": "{{{_ingest.timestamp}}}",
+        "if": "ctx._tmp?.time != null"
+      }
+    },
+    {
+      "script": {
+        "description": "logs/latest.log carries a clock time but no date — the day is only implicit in the filename it rolls into at midnight (logs/2026-09-25-1.log.gz). Elastic Agent tails the file live, so ingest time is a good stand-in for the missing date: take today's date in the server's local timezone and graft the log line's own H:m:s onto it. If that produces a time more than a minute in the future, the line was written just before local midnight and read just after, so roll back a day. A line delayed by more than a minute in the harvester's read queue — the agent down, a burst on restart replaying a backlog — still gets today's date instead of the day it actually happened; nothing here can tell those two cases apart from the clock time alone.",
+        "lang": "painless",
+        "if": "ctx._tmp?.time != null",
+        "source": "def tz = ZoneId.of(ctx.event?.timezone != null ? ctx.event.timezone : 'UTC'); def now = Instant.parse(ctx._tmp.now).atZone(tz); def p = ctx._tmp.time.splitOnToken(':'); def dt = now.withHour(Integer.parseInt(p[0])).withMinute(Integer.parseInt(p[1])).withSecond(Integer.parseInt(p[2])).withNano(0); if (dt.isAfter(now.plusMinutes(1))) { dt = dt.minusDays(1); } ctx['@timestamp'] = DateTimeFormatter.ISO_INSTANT.format(dt.toInstant());"
+      }
+    },
+    {
+      "set": {
+        "field": "message",
+        "copy_from": "_tmp.msg",
+        "if": "ctx._tmp?.msg != null"
+      }
+    },
+    {
+      "set": {
+        "field": "log.level",
+        "copy_from": "_tmp.lvl",
+        "if": "ctx._tmp?.lvl != null"
+      }
+    },
+    {
+      "lowercase": {
+        "field": "log.level",
+        "ignore_missing": true
+      }
+    },
+    {
+      "set": {
+        "field": "event.kind",
+        "value": "event",
+        "override": false
+      }
+    },
+    {
+      "set": {
+        "field": "event.module",
+        "value": "minecraft",
+        "override": false
+      }
+    },
+    {
+      "set": {
+        "field": "event.type",
+        "value": [
+          "error"
+        ],
+        "if": "ctx.log?.level != null && (ctx.log.level == 'error' || ctx.log.level == 'fatal')"
+      }
+    },
+    {
+      "remove": {
+        "field": "_tmp",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "set": {
+        "field": "error.message",
+        "value": "logs-minecraft@custom: {{{_ingest.on_failure_message}}}"
+      }
+    },
+    {
+      "remove": {
+        "field": "_tmp",
+        "ignore_missing": true
+      }
+    }
+  ]
+}

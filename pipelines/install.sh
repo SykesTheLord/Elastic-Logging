@@ -42,6 +42,11 @@ shim bazarr bazarr-common
 for d in jellyfin kavita;                              do shim "$d" serilog-common; done
 shim emby emby-common
 
+# Minecraft has its own format (no shared parser to shim to), so it is a full
+# pipeline like the network-device ones below, not a delegating shim.
+put "logs-minecraft@custom" "logs-minecraft@custom.json"
+echo "   pipeline logs-minecraft@custom"
+
 # Network devices. These attach to integration data streams rather than to
 # Custom Logs, so they are not reached through the logs@custom dispatcher's
 # event.dataset lookup alone — Fleet appends its own call to

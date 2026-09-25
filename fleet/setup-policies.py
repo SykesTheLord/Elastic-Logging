@@ -205,6 +205,10 @@ def journald_errors():
 
 ARR_ML = r"^\d{4}-\d{2}-\d{2}"
 SERILOG_ML = r"^\[\d{4}-\d{2}-\d{2}"
+# logs/latest.log lines start "[HH:MM:SS] [Thread/LEVEL]: ...". A crash's
+# stack trace lines start with a tab instead, which is what this negates on —
+# without it each "\tat net.minecraft...." line becomes its own document.
+MINECRAFT_ML = r"^\[\d{2}:\d{2}:\d{2}\]"
 # Kavita prefixes every line with its own app name, so a new entry does not
 # start with the timestamp bracket. Without this no line looks like a new
 # entry, and negate/after then glues all 200 max_lines into one document.
@@ -263,6 +267,21 @@ MEDIA_APPS = [
     # logs, which are not application logs at all.
     ("emby",     "%s/emby/logs/embyserver.txt"   % ARR_APPDATA, ARR_ML),
 ]
+
+# One agent policy can cover several server instances on the same host — a
+# survival world and a creation/modded world both drop logs/latest.log under
+# their own working directory. "latest.log" is always the current file (a
+# server rotates the rest into logs/<date>-N.log.gz on startup/midnight), so
+# unlike the *arr apps' numbered rotation, a glob here does not replay history.
+MINECRAFT_PATH = "/opt/minecraft/*/logs/latest.log"
+
+
+def minecraft_policy():
+    print("\n   minecraft")
+    add("system", "minecraft", "system", dict(SYSTEM_INPUTS))
+    add("journal-errors", "minecraft", "journald", journald_errors())
+    add("minecraft-logs", "minecraft", "log",
+        custom_log("minecraft", [MINECRAFT_PATH], MINECRAFT_ML))
 
 
 def proxmox_policy():
@@ -469,6 +488,9 @@ def main():
     fresh_baseline = ensure_agent_policy(
         "baseline", "baseline",
         "Any other host — system metrics and the journal, no Docker or app-specific inputs")
+    fresh_minecraft = ensure_agent_policy(
+        "minecraft", "minecraft",
+        "Machines running one or more Minecraft Java Edition servers")
 
     if fresh_pve:
         proxmox_policy()
@@ -478,8 +500,10 @@ def main():
         stack_policy()
     if fresh_baseline:
         baseline_policy()
+    if fresh_minecraft:
+        minecraft_policy()
 
-    if not (fresh_pve or fresh_vm or fresh_stack or fresh_baseline):
+    if not (fresh_pve or fresh_vm or fresh_stack or fresh_baseline or fresh_minecraft):
         print("   nothing to do")
     return 0
 

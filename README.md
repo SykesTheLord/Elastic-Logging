@@ -166,6 +166,27 @@ flood the cluster it is complaining about.
 
 Agents appear in Kibana → Fleet → Agents within about a minute.
 
+#### One paste instead of copying files by hand
+
+`fleet/enrollment-tokens.sh` above assumes `ca.crt` and the installer script
+are already on the target host. `fleet/print-install-commands.sh` skips that:
+it prints one self-contained command per use case that clones this repo into
+`~/.elastic-logging/repo` (so the installer scripts exist there — no separate
+file copy), decodes `ca.crt` from a value embedded in the command itself, and
+runs the right installer with its enrollment token already filled in. Paste
+one line into a root shell on the target host and it is enrolled.
+
+```bash
+./fleet/print-install-commands.sh
+```
+
+Re-running a printed command on a host that already has the clone `git pull`s
+instead of failing on a non-empty directory, so it is also the update path.
+
+Needs `git remote get-url origin` to resolve to something the *target* host
+can reach — an `git@github.com:...` origin means every target host needs a
+deploy key that can read it; the script warns but does not stop you.
+
 > Both installers pass `--install-servers`. From 9.0 the default "basic" agent
 > flavor ships **without** the journald dependencies, and the Journald
 > integration then silently collects nothing at all. This is the single most
@@ -257,6 +278,37 @@ cd fleet
 (equivalently, re-run `stack/bootstrap.sh`, which calls this script and is
 itself idempotent). Then fetch its enrollment token and enroll the machine as
 above.
+
+### Minecraft servers — policy `minecraft`
+
+System metrics, the journal at error and above, plus a Custom Logs input on
+`/opt/minecraft/*/logs/latest.log` — one dataset (`minecraft`) covering every
+server instance on the host, since `latest.log` is always the current file
+regardless of how many worlds are running. If your servers live somewhere
+else, fix the path in Kibana → Fleet → `minecraft` → the Custom Logs
+integration; a glob matching nothing collects nothing, silently.
+
+`logs-minecraft@custom` parses the vanilla/Paper log4j line format
+(`[10:15:31] [Server thread/INFO]: message`) and, since that line carries a
+clock time but no date, derives `@timestamp` from ingest time in the server's
+local timezone — see the pipeline's own comment for the midnight-rollover and
+backlog-replay caveats that come with that.
+
+```bash
+sudo ./vms/install-agent.sh --url https://<STACK_IP>:8220 --token <token> --ca ./ca.crt
+```
+
+This is the same installer the media VMs use — its Docker check and its
+`EXPECTED` media-app log-path check are both irrelevant noise on a
+Minecraft-only host and can be ignored. It only chooses *how* to install the
+agent; *which* policy it joins comes from the enrollment token.
+
+Adding this policy to a stack that predates it works the same way as
+`baseline` above: re-run `fleet/setup-policies.py` (or `stack/bootstrap.sh`),
+which creates only the new `minecraft` policy, then also run
+`pipelines/install.sh` to install `logs-minecraft@custom` — that pipeline
+does not exist until you do, since `setup-policies.py` only touches Fleet,
+never Elasticsearch's ingest pipelines.
 
 ## Changing what a policy collects
 
