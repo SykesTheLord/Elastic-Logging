@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "managed_by": "homelab-logging"
+  },
+  "description": "Greenbone findings from greenbone/gvm-export.py. The exporter writes the scanned machine to greenbone.host.*, because the Elastic Agent on the Greenbone VM stamps its own host metadata over host.* on every event it ships. This puts things where ECS wants them: the scanner becomes observer.*, the scanned machine becomes host.*. Guarded on greenbone.host so a second invocation is a no-op.",
+  "processors": [
+    {
+      "script": {
+        "lang": "painless",
+        "if": "ctx.greenbone?.host instanceof Map",
+        "description": "Swap scanner and target. host.name is the scanned machine's short name, which is what the Elastic Agent on that machine reports, so the per-host dashboards' host.name filter finds its findings; the full reverse-DNS name is kept in host.hostname. A host Greenbone could not resolve is named by its IP, so tables grouped by host never lose a row to a missing field.",
+        "source": "def scanner = ctx.host; def target = ctx.greenbone.host; ctx.greenbone.remove('host'); def obs = ['type': 'scanner', 'vendor': 'Greenbone', 'product': 'OpenVAS']; if (scanner instanceof Map) { if (scanner.name != null) { obs.name = scanner.name; } if (scanner.hostname != null) { obs.hostname = scanner.hostname; } if (scanner.ip != null) { obs.ip = scanner.ip; } if (scanner.os != null) { obs.os = scanner.os; } } ctx.observer = obs; def h = ['ip': target.ip]; def n = target.name; if (n == null || n == '' || n == target.ip) { h.name = target.ip; } else { h.hostname = n; int dot = n.indexOf('.'); h.name = dot > 0 ? n.substring(0, dot) : n; } ctx.host = h;"
+      }
+    },
+    {
+      "lowercase": {
+        "field": "host.name",
+        "ignore_missing": true,
+        "description": "Greenbone reports whatever reverse DNS returned, often upper-case from a router's DHCP table, while agents report the lower-case hostname. keyword matching is case-sensitive."
+      }
+    },
+    {
+      "lowercase": {
+        "field": "host.hostname",
+        "ignore_missing": true
+      }
+    }
+  ]
+}

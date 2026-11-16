@@ -5,7 +5,11 @@
 # with its enrollment token already filled in.
 #
 # Run on the stack VM, where stack/.env and stack/certs/ca/ca.crt live.
+#
+#   ./print-install-commands.sh              # every policy
+#   ./print-install-commands.sh greenbone    # only the named ones
 set -euo pipefail
+ONLY="$*"
 cd "$(dirname "$0")"
 
 ENVF=../stack/.env
@@ -40,8 +44,9 @@ HIDDEN='~/.elastic-logging'
 curl -fsS -k -u "elastic:${ELASTIC_PASSWORD}" -H 'kbn-xsrf: true' \
   "${KB}/api/fleet/enrollment_api_keys?perPage=100" \
 | STACK_IP="$STACK_IP" FLEET_PORT="$FLEET_PORT" REPO_URL="$REPO_URL" \
-  CA_B64="$CA_B64" HIDDEN="$HIDDEN" python3 -c '
-import json, os, sys
+  CA_B64="$CA_B64" HIDDEN="$HIDDEN" GREENBONE_SCAN_PUBKEY="${GREENBONE_SCAN_PUBKEY:-}" \
+  ONLY="$ONLY" python3 -c '
+import json, os, shlex, sys
 
 url = "https://%s:%s" % (os.environ["STACK_IP"], os.environ["FLEET_PORT"])
 repo_url = os.environ["REPO_URL"]
@@ -60,7 +65,15 @@ INSTALLERS = {
                       ("Arch Linux, headless",       "vms/install-agent-arch.sh")],
     "minecraft":    [("Ubuntu/Debian",               "vms/install-agent.sh"),
                       ("Arch Linux, headless",        "vms/install-agent-arch.sh")],
+    # Not just the agent: installs Docker and Greenbone, then enrols.
+    "greenbone":    [("Ubuntu/Debian Greenbone VM", "greenbone/install.sh")],
 }
+
+# The public half of the key Greenbone logs in with (greenbone/setup.sh prints
+# it). When set, every command also creates the scan account on the target.
+scan_key = os.environ.get("GREENBONE_SCAN_PUBKEY", "").strip()
+scan_arg = " --scan-key %s" % shlex.quote(scan_key) if scan_key else ""
+only = os.environ.get("ONLY", "").split()
 
 clone = "{h}/repo".format(h=hidden)
 ca_path = "{h}/ca.crt".format(h=hidden)
@@ -70,7 +83,7 @@ for k in json.load(sys.stdin)["items"]:
         continue
     pid = k["policy_id"]
     variants = INSTALLERS.get(pid)
-    if not variants:
+    if not variants or (only and pid not in only):
         continue
     print("\n\033[1m%s\033[0m" % pid)
     for label, script in variants:
@@ -79,9 +92,11 @@ for k in json.load(sys.stdin)["items"]:
             "mkdir -p {hidden} && echo {ca_b64} | base64 -d > {ca_path} && "
             "([ -d {clone}/.git ] && git -C {clone} pull --ff-only "
             "|| git clone --depth 1 {repo_url} {clone}) && "
-            "sudo {clone}/{script} --url {url} --token {token} --ca {ca_path}"
+            "sudo {clone}/{script} --url {url} --token {token} --ca {ca_path}{scan}"
         ).format(hidden=hidden, ca_b64=ca_b64, ca_path=ca_path, clone=clone,
-                  repo_url=repo_url, script=script, url=url, token=k["api_key"])
+                  repo_url=repo_url, script=script, url=url, token=k["api_key"],
+                  # The Greenbone VM generates the key; it has nothing to receive.
+                  scan="" if script.startswith("greenbone/") else scan_arg)
         print("    %s" % cmd)
 '
 echo

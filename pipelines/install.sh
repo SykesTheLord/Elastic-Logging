@@ -47,6 +47,11 @@ shim emby emby-common
 put "logs-minecraft@custom" "logs-minecraft@custom.json"
 echo "   pipeline logs-minecraft@custom"
 
+# Greenbone findings: no parsing (the exporter writes JSON), only moving the
+# scanned host back into host.* after the agent overwrote it with its own.
+put "logs-greenbone.finding@custom" "logs-greenbone.finding@custom.json"
+echo "   pipeline logs-greenbone.finding@custom"
+
 # Network devices. These attach to integration data streams rather than to
 # Custom Logs, so they are not reached through the logs@custom dispatcher's
 # event.dataset lookup alone — Fleet appends its own call to

@@ -1,0 +1,17 @@
+[Unit]
+Description=Report pending package and container image updates for Elastic
+Documentation=file:///usr/local/bin/elastic-updates.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/elastic-updates.py
+# Root to refresh the package lists and read the Docker socket. It only ever
+# reads what is pending; nothing here installs anything.
+User=root
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=true
+ProtectHome=true
+TimeoutStartSec=20min

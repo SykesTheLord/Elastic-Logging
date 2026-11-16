@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for software updates every 6 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+# Spread the fleet out, so every host does not hit the mirrors and Docker Hub
+# in the same second.
+RandomizedDelaySec=30min
+Persistent=true
+Unit=elastic-updates.service
+
+[Install]
+WantedBy=timers.target

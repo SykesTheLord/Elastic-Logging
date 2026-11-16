@@ -6,11 +6,12 @@
 #   ./install-agent.sh --url https://192.168.1.50:8220 \
 #                      --token <enrollment-token> \
 #                      --ca ./ca.crt \
-#                      --tags media,docker
+#                      --tags media,docker \
+#                      [--scan-key "<Greenbone public key>"]
 set -euo pipefail
 
 AGENT_VERSION=9.5.1
-URL="" TOKEN="" CA="" TAGS=""
+URL="" TOKEN="" CA="" TAGS="" SCAN_KEY=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -18,8 +19,9 @@ while [[ $# -gt 0 ]]; do
     --token)   TOKEN=$2;   shift 2 ;;
     --ca)      CA=$2;      shift 2 ;;
     --tags)    TAGS=$2;    shift 2 ;;
+    --scan-key) SCAN_KEY=$2; shift 2 ;;
     --version) AGENT_VERSION=$2; shift 2 ;;
-    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -40,6 +42,19 @@ OS_PRETTY=$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-unknown}")
 OS_ID=$(. /etc/os-release && printf '%s' "${ID:-unknown}")
 echo "   ${OS_PRETTY}"
 [[ $OS_ID == ubuntu || $OS_ID == debian ]] || echo "   !! Untested on ${OS_ID}; continuing anyway."
+
+# Elastic publishes the Linux agent for x86_64 and arm64 only. Ask dpkg rather
+# than uname: a 64-bit kernel under a 32-bit userland (Raspberry Pi OS 32-bit on
+# a Pi 4 or 5) reports "aarch64" from uname -m but cannot run the arm64 agent.
+DEB_ARCH=$(dpkg --print-architecture)
+case $DEB_ARCH in
+  amd64) PKG_ARCH=x86_64 ;;
+  arm64) PKG_ARCH=arm64 ;;
+  *) echo "!! Unsupported architecture: ${DEB_ARCH} userland on a $(uname -m) kernel."
+     echo "   Elastic Agent ships for x86_64 and arm64 only — install a 64-bit (amd64/arm64) OS."
+     exit 1 ;;
+esac
+echo "   architecture: ${PKG_ARCH}"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
@@ -84,6 +99,12 @@ if [[ $FOUND -eq 0 ]]; then
 EOF
 fi
 
+# ── Update checker and Greenbone scan account ────────────────────────────────
+# Before the agent, so the file the software-updates input tails already exists.
+HOST_TOOLS=("$(dirname "$0")/install-host-tools.sh")
+[[ -n $SCAN_KEY ]] && HOST_TOOLS+=( --scan-key "$SCAN_KEY" )
+"${HOST_TOOLS[@]}"
+
 # ── Elastic Agent ────────────────────────────────────────────────────────────
 step "Installing Elastic Agent ${AGENT_VERSION}"
 if command -v elastic-agent >/dev/null 2>&1; then
@@ -92,8 +113,7 @@ if command -v elastic-agent >/dev/null 2>&1; then
 fi
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-ARCH=$(dpkg --print-architecture)
-PKG="elastic-agent-${AGENT_VERSION}-linux-$([[ $ARCH == arm64 ]] && echo arm64 || echo x86_64)"
+PKG="elastic-agent-${AGENT_VERSION}-linux-${PKG_ARCH}"
 DL="https://artifacts.elastic.co/downloads/beats/elastic-agent/${PKG}.tar.gz"
 echo "   downloading ${PKG}.tar.gz"
 curl -fsSL --retry 3 -o "$TMP/agent.tar.gz" "$DL" || {

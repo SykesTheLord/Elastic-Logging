@@ -135,8 +135,9 @@ elastic-agent status 2>/dev/null && echo "ALREADY ENROLLED — do not install a 
 
   ```bash
   VERSION=9.5.1
-  curl -fsSL "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${VERSION}-linux-x86_64.tar.gz" | tar -xz
-  sudo ./elastic-agent-${VERSION}-linux-x86_64/elastic-agent install \
+  ARCH=$(uname -m | sed 's/aarch64/arm64/')   # x86_64 or arm64 — nothing else is published
+  curl -fsSL "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${VERSION}-linux-${ARCH}.tar.gz" | tar -xz
+  sudo ./elastic-agent-${VERSION}-linux-${ARCH}/elastic-agent install \
     --non-interactive --install-servers \
     --url=https://192.168.1.50:8220 \
     --enrollment-token=<token> \

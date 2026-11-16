@@ -12,3 +12,8 @@ stack/certs.bak-*
 # Generated per-host dashboards — rebuilt from Fleet by stack/gen-dashboards.py,
 # and specific to one deployment's hostnames.
 stack/grafana/provisioning/dashboards/json/generated/
+
+# Greenbone VM: admin password, and the private key its authenticated scans
+# log in to every host with.
+greenbone/.env
+greenbone/secrets/

@@ -15,6 +15,7 @@ Three different machines. Getting this wrong is the easiest mistake to make here
 | `stack/`, `fleet/`, `pipelines/` | the **stack VM** — they reach Elasticsearch and Kibana at `https://localhost:…` and read `stack/certs/` |
 | `proxmox/` | the **Proxmox host** (the hypervisor itself, not a guest) |
 | `vms/` | each guest, **including the stack VM**, which needs its own agent |
+| `greenbone/` | the **Greenbone VM** — its own guest, reaching gvmd over `/run/gvmd/gvmd.sock` |
 
 ## Verifying changes
 
@@ -33,6 +34,9 @@ calling it done:
   identical to the host's** so the inner `docker compose` bind mounts resolve.
 - **Agent input or parser changes** — `docker.elastic.co/beats/filebeat:9.5.1` with a
   few lines of config and console output. Much cheaper than a full Fleet enrolment.
+  The 9.5.1 Beats and Agent images need an x86-64-v3 CPU and die with "CPU does not
+  support x86-64-v3" on a generic QEMU CPU; run the `filebeat-9.5.1-linux-x86_64`
+  tarball's binary inside `ubuntu:24.04` instead.
 - **Dashboard changes** — a real Grafana container with the provisioning directory
   mounted proves the JSON loads; only running the panel targets through
   `/api/ds/query` against an Elasticsearch holding documents proves the queries
@@ -64,6 +68,11 @@ These look correct and silently do nothing:
 - **Agents trust Elasticsearch by CA fingerprint**, which only matches a CA present in
   the *served chain* — so each service `.crt` must have the CA appended to it.
 - **Elastic Agent 9.x needs `--install-servers`**, or the journald input collects nothing.
+- **Sourcing a `.env` with bash cuts a value off at an unquoted `;`.** `SCAN_RRULE=FREQ=WEEKLY;BYDAY=SU`
+  becomes `FREQ=WEEKLY` plus a stray `BYDAY` variable, while `docker compose`
+  reads the same file and gets the full value — so the two disagree and nothing
+  errors. Quote such values in `.env.example`, and read the raw line where a
+  user's unquoted copy must still work (`greenbone/setup.sh` does).
 - **`/etc/os-release` defines `VERSION`.** Never name a shell variable `VERSION` in a
   script that sources it.
 - **UniFi firewall logs changed shape in Network 10.x, and the package half-parses
@@ -126,6 +135,22 @@ These look correct and silently do nothing:
   in `setup-policies.py` names the pseudo filesystems explicitly instead. A disk with
   no mounted filesystem (LVM-thin, a zvol, an unformatted spare) is out of reach of
   this metricset regardless.
+- **The agent stamps its own `host.*` over an NDJSON line's.** `add_host_metadata`
+  replaces `host.name` even with `json.overwrite_keys: true`, so a file describing
+  *another* machine (Greenbone findings) must carry it elsewhere —
+  `greenbone.host.*` — and swap it back in an `@custom` pipeline.
+- **Grafana's Elasticsearch datasource rejects a metric with no bucket
+  aggregation** ("missing metrics and aggregations"), and a lone `filters` bucket
+  returns no frame. For a whole-range stat, bucket on a one-value `terms` such as
+  `event.dataset` — `total()` in `gen-dashboards.py`.
+- **`top_metrics` on a boolean field makes Grafana 12 answer HTTP 500.** Numeric
+  fields only; take `max` of a boolean.
+- **A table column's name depends on its neighbours.** Grafana names a metric
+  column `Max` when it is the only `max` in the query and `Max <field>` when there
+  are two, so an override written for one silently stops matching when a metric is
+  added. Check the frame's field names through `/api/ds/query`.
+- **`checkupdates` needs `fakeroot`**, which a headless Arch box often lacks; it then
+  fails with "Cannot find the fakeroot binary" and reports no updates.
 - **`linux.service` is a *metrics* data stream.** systemd unit panels belong on the
   `es-metrics` datasource; on `es-logs` they return nothing, and a count panel with
   `min_doc_count: 0` then draws a confident flat zero rather than looking broken.
@@ -149,6 +174,8 @@ These look correct and silently do nothing:
 ## Never commit
 
 `stack/.env`, `stack/certs/`, `certs.bak-*` — the CA private key and every password.
+`greenbone/.env`, `greenbone/secrets/` — the scanner's admin password and the SSH
+key that logs in to every host.
 
 ## Further reference
 

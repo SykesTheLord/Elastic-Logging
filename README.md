@@ -59,6 +59,27 @@ nothing else, and snapshots as a unit before an upgrade.
 qm set <vmid> --cpu host --balloon 0 --onboot 1 --startup order=1 --agent enabled=1
 ```
 
+### The Greenbone VM (optional)
+
+A second Ubuntu 24.04 VM for the vulnerability scanner — 4 cores (`host` CPU
+type), 8 GB, 80 GB. Kept off the stack VM because its feed load and scans want
+the RAM and disk Elasticsearch uses as page cache. See
+[docs/vulnerability-scanning.md](docs/vulnerability-scanning.md).
+
+### arm64
+
+Every piece runs on 64-bit ARM as well as x86-64. That covers the stack VM, the
+Greenbone VM, and any host you enrol, such as a Raspberry Pi 4/5, an Ampere box
+or an Apple Silicon VM. Every image in both compose files is published for
+`amd64` and `arm64`, so Docker pulls the right one by itself. The agent
+installers pick the matching `elastic-agent-*-linux-{x86_64,arm64}` tarball.
+
+32-bit ARM is not supported, because Elastic publishes no 32-bit agent. That
+includes Raspberry Pi OS 32-bit running on 64-bit hardware: `uname -m` says
+`aarch64` but the userland is `armhf`. The Debian installers check `dpkg`'s
+architecture rather than the kernel's and refuse up front instead of failing
+mid-install.
+
 ### Storage
 
 Put the VM disk on SSD-backed storage. Elasticsearch on spinning rust is
@@ -187,6 +208,31 @@ Needs `git remote get-url origin` to resolve to something the *target* host
 can reach — an `git@github.com:...` origin means every target host needs a
 deploy key that can read it; the script warns but does not stop you.
 
+Every installer also sets up the software-update checker (below), and with
+`--scan-key` the account Greenbone's authenticated scans log in as. Put
+`GREENBONE_SCAN_PUBKEY` in `stack/.env` and `print-install-commands.sh` adds
+that flag to every command it prints.
+
+### 3. Greenbone (optional)
+
+Three steps across two machines, each one command:
+
+```bash
+# 1. stack VM: Fleet policy, pipeline, dashboards; prints the command for step 2
+./stack/connect-greenbone.sh
+
+# 2. a fresh Ubuntu 24.04 VM: paste that command. It installs Docker and
+#    Greenbone, enrols the agent, and loads the feeds in the background (hours).
+#    It ends by printing the command for step 3.
+
+# 3. stack VM: save the scan key and link Grafana to the Greenbone web UI
+./stack/connect-greenbone.sh --pubkey "ssh-rsa AAAA..." --web-ui https://<greenbone VM>:9392
+```
+
+Later changes, to the repo or to `greenbone/.env`: `sudo ./greenbone/update.sh`
+on the Greenbone VM, and `./stack/connect-greenbone.sh` again on the stack VM.
+See [docs/vulnerability-scanning.md](docs/vulnerability-scanning.md).
+
 > Both installers pass `--install-servers`. From 9.0 the default "basic" agent
 > flavor ships **without** the journald dependencies, and the Journald
 > integration then silently collects nothing at all. This is the single most
@@ -244,6 +290,24 @@ always up and holds the cluster:
 Nothing is installed on the QNAP or the UniFi gear — they push. See
 [docs/network-devices.md](docs/network-devices.md) for the device-side settings
 and the model caveats on NetFlow.
+
+### Every host — software updates
+
+Every policy carries a `software-updates` input reading
+`/var/log/elastic/updates.ndjson`, which `vms/updates.py` writes every 6 hours:
+pending apt or pacman updates (which are security fixes), whether a reboot is
+pending, and which running containers' images have a newer build under the
+same tag. The agent installers set it up; on a host enrolled before it existed,
+run `sudo ./vms/install-host-tools.sh`, and on a stack whose policies predate
+it, `./fleet/add-update-inputs.py`.
+
+### Greenbone VM — policy `greenbone`
+
+System metrics, the journal, Docker, software updates, and the scanner's
+findings: `greenbone/gvm-export.py` turns every finished report into one
+document per finding plus one per scanned host, dataset `greenbone.finding`.
+The scanned machine ends up in `host.*` and the scanner in `observer.*`. See
+[docs/vulnerability-scanning.md](docs/vulnerability-scanning.md).
 
 ### Anything else — policy `baseline`
 
@@ -318,8 +382,9 @@ never Elasticsearch's ingest pipelines.
 > reads at boot. The `fleet/migrate-*.py` scripts exist for exactly this:
 > `migrate-media-paths.py` pushes the current `MEDIA_APPS` paths and multiline
 > patterns onto the live policies, `migrate-unifi-inputs.py` does the same for
-> the network listeners, and `migrate-filesystem-types.py` does it for
-> `FS_IGNORE_TYPES`. All three take `--check`.
+> the network listeners, `migrate-filesystem-types.py` does it for
+> `FS_IGNORE_TYPES`, and `add-update-inputs.py` adds the software-updates
+> input. All four take `--check`.
 
 
 `fleet/setup-policies.py` only ever **creates** policies — it leaves existing
@@ -497,6 +562,12 @@ step by hand.
 | `Network — UniFi firewall` | Allow vs block, rule sets and rule numbers, top blocked sources and ports |
 | `Network — UniFi activity` | CEF event types and severities, reporting devices |
 | `Network — flows (NetFlow)` | Top talkers, conversations and destination ports by bytes |
+| `Security — vulnerabilities (Greenbone)` | When the last scan finished, findings by severity, hosts by worst CVSS, which hosts the SSH login failed on, top vulnerabilities, and every finding with its fix |
+| `Software updates` | Hosts with pending and security updates, reboots needed, stale container images, the packages pending across the estate |
+
+Host dashboards also grow a **Software updates** row (pending, security,
+reboot, stale images, the package list) and, once Greenbone is set up, a
+**Vulnerabilities** row for that host's findings.
 
 Output goes to `grafana/provisioning/dashboards/json/generated/`, which the
 existing provisioner already watches — new dashboards appear within 30 seconds
@@ -618,7 +689,9 @@ stack/        docker-compose.yml, .env, cert + bootstrap scripts, per-app
 pipelines/    ingest pipelines and their installer
 fleet/        agent policy provisioner, stream toggle, enrollment tokens
 proxmox/      agent installer, hwstats.py, systemd units
-vms/          agent installer
+vms/          agent installers, the update checker and its systemd units
+greenbone/    Greenbone compose file, install/setup/update, GMP provisioning,
+              the exporter
 docs/         integration guides
 ```
 
@@ -629,6 +702,8 @@ docs/         integration guides
 - [MonitoringApp](docs/monitoringapp.md) — what to fix before its Java backend
   and Go agent can connect.
 - [CalendarSync](docs/calendarsync.md) — one wrong port, and a TLS decision.
+- [Vulnerability scanning and software updates](docs/vulnerability-scanning.md)
+  — the Greenbone VM, authenticated scans, reading the dashboards.
 - [QNAP and UniFi](docs/network-devices.md) — device-side settings, what parses,
   and what to check when nothing arrives.
 - [Prompt: MonitoringApp behind Elastic Agent](docs/monitoringapp-agent-prompt.md)

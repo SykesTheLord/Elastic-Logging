@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Create the Fleet agent policies for the Proxmox host and the media VMs.
+Create the Fleet agent policies for the Proxmox host, the VMs, and the
+Greenbone scanner.
+
+    ./setup-policies.py              # every policy that does not exist yet
+    ./setup-policies.py greenbone    # only the named ones
 
 Idempotent: existing policies are left alone, so re-running after you have
 tweaked something in the Fleet UI will not stomp your changes. Delete a policy
@@ -203,6 +207,49 @@ def journald_errors():
     }
 
 
+def ndjson_log(dataset, path):
+    """A Custom Logs input for a file this repo's own collectors write.
+
+    Already NDJSON, so it is decoded at the edge rather than by a grok
+    pipeline. json.*, not `parsers: - ndjson:` — see the note in custom_log().
+    keys_under_root puts the decoded fields at the document root, which is
+    what the dashboards query (hw.kind, updates.pending) depend on.
+    """
+    return {
+        "logs-logfile": {
+            "enabled": True,
+            "streams": {
+                "log.logs": {
+                    "enabled": True,
+                    "vars": {
+                        "paths": [path],
+                        "data_stream.dataset": dataset,
+                        "custom": (
+                            "json.keys_under_root: true\n"
+                            "json.overwrite_keys: true\n"
+                            "json.add_error_key: true\n"
+                            "json.expand_keys: true\n"
+                        ),
+                    },
+                }
+            },
+        }
+    }
+
+
+# Written by vms/updates.py, which every agent installer sets up through
+# vms/install-host-tools.sh. Every policy gets it: pending packages and stale
+# container images matter on every host. fleet/add-update-inputs.py adds it to
+# policies created before it existed.
+UPDATES_NAME = "software-updates"
+UPDATES_DATASET = "software_updates"
+UPDATES_PATH = "/var/log/elastic/updates.ndjson"
+
+
+def software_updates():
+    return ndjson_log(UPDATES_DATASET, UPDATES_PATH)
+
+
 ARR_ML = r"^\d{4}-\d{2}-\d{2}"
 SERILOG_ML = r"^\[\d{4}-\d{2}-\d{2}"
 # logs/latest.log lines start "[HH:MM:SS] [Thread/LEVEL]: ...". A crash's
@@ -280,6 +327,7 @@ def minecraft_policy():
     print("\n   minecraft")
     add("system", "minecraft", "system", dict(SYSTEM_INPUTS))
     add("journal-errors", "minecraft", "journald", journald_errors())
+    add(UPDATES_NAME, "minecraft", "log", software_updates())
     add("minecraft-logs", "minecraft", "log",
         custom_log("minecraft", [MINECRAFT_PATH], MINECRAFT_ML))
 
@@ -322,30 +370,9 @@ def proxmox_policy():
 
     # Temperatures, SMART and ZFS, produced by hwstats.py. Already NDJSON, so
     # it is parsed at the edge rather than with a grok pipeline.
-    add("proxmox-hardware", "proxmox-host", "log", {
-        "logs-logfile": {
-            "enabled": True,
-            "streams": {
-                "log.logs": {
-                    "enabled": True,
-                    "vars": {
-                        "paths": ["/var/log/elastic/hwstats.ndjson"],
-                        "data_stream.dataset": "proxmox_hw",
-                        # json.*, not `parsers: - ndjson:` — see the note in
-                        # custom_log(). keys_under_root puts the decoded fields
-                        # at the document root, which is what the dashboard
-                        # queries (hw.kind, hw.sensor.celsius) depend on.
-                        "custom": (
-                            "json.keys_under_root: true\n"
-                            "json.overwrite_keys: true\n"
-                            "json.add_error_key: true\n"
-                            "json.expand_keys: true\n"
-                        ),
-                    },
-                }
-            },
-        }
-    })
+    add("proxmox-hardware", "proxmox-host", "log",
+        ndjson_log("proxmox_hw", "/var/log/elastic/hwstats.ndjson"))
+    add(UPDATES_NAME, "proxmox-host", "log", software_updates())
 
 
 def media_policy():
@@ -354,6 +381,7 @@ def media_policy():
     # Container metrics plus stdout/stderr of every container on the host.
     add("docker", "media-vm", "docker", {})
     add("journal-errors", "media-vm", "journald", journald_errors())
+    add(UPDATES_NAME, "media-vm", "log", software_updates())
     for dataset, path, ml in MEDIA_APPS:
         add("%s-logs" % dataset, "media-vm", "log", custom_log(dataset, [path], ml))
 
@@ -463,6 +491,7 @@ def stack_policy():
     # disk or flood the cluster it is complaining about.
     add("docker", "stack-vm", "docker", {})
     add("journal-errors", "stack-vm", "journald", journald_errors())
+    add(UPDATES_NAME, "stack-vm", "log", software_updates())
     network_receivers()
 
 
@@ -476,41 +505,71 @@ def baseline_policy():
     print("\n   baseline")
     add("system", "baseline", "system", dict(SYSTEM_INPUTS))
     add("journal-errors", "baseline", "journald", journald_errors())
+    add(UPDATES_NAME, "baseline", "log", software_updates())
 
 
-def main():
-    fresh_pve = ensure_agent_policy(
-        "proxmox-host", "proxmox-host", "Proxmox VE hypervisor")
-    fresh_vm = ensure_agent_policy(
-        "media-vm", "media-vm", "Ubuntu/Debian VMs running the media stack")
-    fresh_stack = ensure_agent_policy(
-        "stack-vm", "stack-vm", "The Ubuntu VM running Elasticsearch, Kibana, Logstash and Grafana")
-    fresh_baseline = ensure_agent_policy(
-        "baseline", "baseline",
-        "Any other host — system metrics and the journal, no Docker or app-specific inputs")
-    fresh_minecraft = ensure_agent_policy(
-        "minecraft", "minecraft",
-        "Machines running one or more Minecraft Java Edition servers")
+def greenbone_policy():
+    """The VM running Greenbone (greenbone/docker-compose.yml).
 
-    if fresh_pve:
-        proxmox_policy()
-    if fresh_vm:
-        media_policy()
-    if fresh_stack:
-        stack_policy()
-    if fresh_baseline:
-        baseline_policy()
-    if fresh_minecraft:
-        minecraft_policy()
+    Ships the scanner's findings, written by greenbone/gvm-export.py, plus the
+    usual host data — Docker included, since the scanner is fifteen
+    containers and a stuck feed sync shows up in their logs first.
+    """
+    print("\n   greenbone")
+    add("system", "greenbone", "system", dict(SYSTEM_INPUTS))
+    add("docker", "greenbone", "docker", {})
+    add("journal-errors", "greenbone", "journald", journald_errors())
+    add(UPDATES_NAME, "greenbone", "log", software_updates())
+    # The agent stamps this VM over host.* on every event; the scanned machine
+    # travels in greenbone.host.* and logs-greenbone.finding@custom swaps the
+    # two back at ingest.
+    add("findings", "greenbone", "log",
+        ndjson_log("greenbone.finding", "/var/log/elastic/greenbone.ndjson"))
 
-    if not (fresh_pve or fresh_vm or fresh_stack or fresh_baseline or fresh_minecraft):
+
+# id, description, builder. The id doubles as the policy name.
+POLICIES = [
+    ("proxmox-host", "Proxmox VE hypervisor", proxmox_policy),
+    ("media-vm", "Ubuntu/Debian VMs running the media stack", media_policy),
+    ("stack-vm", "The Ubuntu VM running Elasticsearch, Kibana, Logstash and Grafana",
+     stack_policy),
+    ("baseline", "Any other host — system metrics and the journal, no Docker or "
+     "app-specific inputs", baseline_policy),
+    ("minecraft", "Machines running one or more Minecraft Java Edition servers",
+     minecraft_policy),
+    ("greenbone", "The VM running the Greenbone vulnerability scanner", greenbone_policy),
+]
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print("usage: setup-policies.py [policy ...]\n\n"
+              "With no arguments, creates every missing policy. Name one or more to\n"
+              "create only those, leaving any you deliberately deleted deleted.\n\n"
+              "policies: %s" % " ".join(p[0] for p in POLICIES))
+        return 0
+    known = [p[0] for p in POLICIES]
+    unknown = [a for a in argv if a not in known]
+    if unknown:
+        print("!! unknown policy: %s (known: %s)" % (" ".join(unknown), " ".join(known)),
+              file=sys.stderr)
+        return 1
+
+    created = False
+    for pid, description, build in POLICIES:
+        if argv and pid not in argv:
+            continue
+        if ensure_agent_policy(pid, pid, description):
+            build()
+            created = True
+    if not created:
         print("   nothing to do")
     return 0
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(main(sys.argv[1:]))
     except RuntimeError as exc:
         print("!! %s" % exc, file=sys.stderr)
         sys.exit(1)

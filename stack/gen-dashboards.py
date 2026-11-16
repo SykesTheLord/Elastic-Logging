@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Generate a Grafana dashboard for every host running an Elastic Agent, plus a
-set of dashboards for the network-device receivers.
+set of dashboards for the network-device receivers, Greenbone's vulnerability
+findings and pending software updates.
 
 Hosts are discovered from Fleet rather than listed in this file, and the panels
 each one gets are chosen from what its agent policy actually collects. Add the
@@ -67,6 +68,7 @@ def load_env():
 
 
 ENV = load_env()
+GREENBONE_WEB_UI = ENV.get("GREENBONE_WEB_UI", "").strip("\"'")
 KB = os.environ.get("KIBANA_URL") or "https://localhost:%s" % ENV.get("KIBANA_PORT", "5601")
 ES = os.environ.get("ES_URL") or "https://localhost:%s" % ENV.get("ES_PORT", "9200")
 
@@ -368,10 +370,12 @@ class Board:
     """A dashboard under construction, packing panels left to right."""
 
     def __init__(self, uid, title, description, tags, link_tag=None,
-                 variables=None, time_from="now-24h", refresh="1m"):
+                 variables=None, time_from="now-24h", refresh="1m", urls=None):
         self.uid, self.title, self.description = uid, title, description
         self.tags = tags
         self.link_tag = link_tag
+        # (title, url) pairs for the dashboard's link bar, opened in a new tab.
+        self.urls = urls or []
         self.variables = variables or []
         self.time_from, self.refresh = time_from, refresh
         self.panels = []
@@ -412,6 +416,11 @@ class Board:
                           "tags": [self.link_tag], "targetBlank": False,
                           "title": self.link_tag.capitalize(), "tooltip": "",
                           "type": "dashboards", "url": ""})
+        for title, url in self.urls:
+            links.append({"asDropdown": False, "icon": "external link",
+                          "includeVars": False, "keepTime": False, "tags": [],
+                          "targetBlank": True, "title": title, "tooltip": url,
+                          "type": "link", "url": url})
         return {
             "uid": self.uid,
             "title": self.title,
@@ -440,6 +449,17 @@ def host_dashboard(agent, host_name, caps, stem):
     has_hw = "proxmox_hw" in datasets
     if has_hw:
         datasets.remove("proxmox_hw")
+    # Both of these are structured state, not application logs, and get rows
+    # of their own below rather than the generic log panels.
+    has_updates = "software_updates" in datasets
+    if has_updates:
+        datasets.remove("software_updates")
+    if "greenbone.finding" in datasets:
+        datasets.remove("greenbone.finding")
+    # Findings land under the scanned host's name, not the scanner's, so
+    # whether this host gets a vulnerability row depends on whether any policy
+    # anywhere ships them — not on this host's own policy.
+    has_vulns = caps.get("greenbone", False)
 
     hq = 'host.name:"$host"'
     b = Board(
@@ -725,6 +745,16 @@ def host_dashboard(agent, host_name, caps, stem):
                                  [terms("container.name", 10), date_hist()],
                                  alias="{{term container.name}}")],
                          style="bars", stack=True), 12, 7)
+
+    # ── Pending updates, when vms/updates.py is feeding this host ──
+    if has_updates:
+        b.row("Software updates")
+        updates_rows(b, hq)
+
+    # ── Vulnerabilities, when Greenbone is scanning the network ──
+    if has_vulns:
+        b.row("Vulnerabilities (Greenbone, last %s)" % VULN_WINDOW)
+        vuln_rows(b, hq)
 
     # ── Application logs, one panel set for whatever Custom Logs collects ──
     if datasets:
@@ -1310,6 +1340,395 @@ NETWORK_BUILDERS = {
 }
 
 
+# ── Vulnerabilities (Greenbone) and software updates ────────────────────────
+
+GB = "event.dataset:greenbone.finding"
+# Finding documents, as distinct from the one-per-host "scanned" summaries the
+# exporter also writes. Only findings carry vulnerability.*.
+GB_FINDINGS = GB + " AND vulnerability.severity:*"
+UPD = "event.dataset:software_updates"
+
+SEVERITIES = [
+    # name, colour, panel description
+    ("Critical", "dark-red", "CVSS 9.0 and above. Remotely exploitable, usually "
+                             "without authentication. Today, not this week."),
+    ("High", "red", "CVSS 7.0–8.9."),
+    ("Medium", "orange", "CVSS 4.0–6.9."),
+    ("Low", "yellow", "CVSS 0.1–3.9."),
+]
+SCORE_STEPS = [{"color": "green", "value": None}, {"color": "yellow", "value": 0.1},
+               {"color": "orange", "value": 4}, {"color": "red", "value": 7},
+               {"color": "dark-red", "value": 9}]
+NONZERO_RED = [{"color": "green", "value": None}, {"color": "red", "value": 1}]
+NONZERO_ORANGE = [{"color": "green", "value": None}, {"color": "orange", "value": 1}]
+
+# How far back a vulnerability panel looks, whatever the dashboard's range.
+# Findings are written once per scan, so a panel looking back less than one
+# scan interval is empty between scans — which reads as "nothing found". 8d
+# covers a weekly schedule with a day of slack; see SCAN_RRULE in greenbone/.env.
+VULN_WINDOW = "8d"
+
+# The distinct-finding count. A host scanned twice inside the window produces
+# its findings twice; counting distinct greenbone.finding_key (host|NVT|port)
+# rather than documents keeps that from doubling every number on the page.
+FINDINGS = metric("cardinality", "greenbone.finding_key")
+
+
+def total(title, query, metrics, description="", steps=None):
+    """A stat over the whole time range rather than its last bucket.
+
+    Grafana's Elasticsearch datasource rejects a metric with no bucket
+    aggregation at all ("missing metrics and aggregations"), and a filters
+    bucket comes back with no frame. A one-bucket terms on event.dataset —
+    which every query here already pins to a single value — gives exactly one
+    row covering the range. When nothing matches there is no row, and the
+    panel would say "No data"; for a count of problems that means zero.
+    """
+    panel = stat(title, [target("A", query, metrics, [terms("event.dataset", 1, mid="9")])],
+                 description=description, calc="lastNotNull", steps=steps)
+    panel["fieldConfig"]["defaults"]["noValue"] = "0"
+    return panel
+
+
+def yes_no(field, title, bad=0):
+    """Column override for a boolean terms key, which Grafana shows as 1/0."""
+    o = rename(field, title)
+    o["properties"].append({"id": "mappings", "value": [{"type": "value", "options": {
+        "1": {"text": "yes", "color": "red" if bad == 1 else "green", "index": 0},
+        "0": {"text": "no", "color": "red" if bad == 0 else "green", "index": 1}}}]})
+    o["properties"].append({"id": "custom.cellOptions", "value": {"type": "color-text"}})
+    return o
+
+
+def column_order(panel, fields):
+    """Grafana lays out terms columns alphabetically by field, not outer to inner."""
+    panel.setdefault("transformations", []).append(
+        {"id": "organize", "options": {"indexByName": {f: i for i, f in enumerate(fields)},
+                                       "renameByName": {}, "excludeByName": {}}})
+    return panel
+
+
+def windowed(panel, window=VULN_WINDOW):
+    """Pin a panel to its own relative range, independent of the time picker."""
+    panel["timeFrom"] = window
+    return panel
+
+
+def raw_table(title, query, fields, renames, description="", size=500, overrides=None):
+    """A table of individual documents, restricted to the named fields in order.
+
+    raw_data returns every field of every hit; filterFieldsByName picks the
+    columns and organize orders and names them.
+    """
+    t = table(title, [target("A", query,
+                             [{"id": "1", "type": "raw_data", "settings": {"size": str(size)}}],
+                             [])],
+              description=description, overrides=overrides)
+    t["transformations"] = [
+        {"id": "filterFieldsByName", "options": {"include": {"names": fields}}},
+        {"id": "organize", "options": {
+            "indexByName": {f: i for i, f in enumerate(fields)},
+            "renameByName": renames, "excludeByName": {}}},
+    ]
+    return t
+
+
+def vuln_rows(b, hq):
+    """Severity tiles and a findings table for one host. Shared by the
+    per-host dashboards; the fleet-wide one builds its own."""
+    q = "%s AND %s" % (GB_FINDINGS, hq)
+    for name, colour, desc in SEVERITIES[:3]:
+        b.add(windowed(total(name, "%s AND vulnerability.severity:%s" % (q, name), FINDINGS,
+                             description=desc + " Distinct findings in the last %s."
+                             % VULN_WINDOW,
+                             steps=[{"color": "green", "value": None},
+                                    {"color": colour, "value": 1}])), 3, 6)
+    b.add(windowed(last_seen("Last scanned",
+                             "%s AND %s AND greenbone.scan.kind:host" % (GB, hq),
+                             description="When Greenbone last finished a scan that covered "
+                                         "this host. Matched on host.name, which comes from "
+                                         "reverse DNS — a host Greenbone resolves to another "
+                                         "name, or not at all, shows here as never.")), 3, 6)
+    b.add(windowed(raw_table(
+        "Findings (medium and above)",
+        "%s AND vulnerability.score.base:>=4" % q,
+        ["vulnerability.score.base", "vulnerability.severity", "greenbone.port",
+         "greenbone.nvt.name", "vulnerability.id", "greenbone.solution"],
+        {"vulnerability.score.base": "CVSS", "vulnerability.severity": "Severity",
+         "greenbone.port": "Port", "greenbone.nvt.name": "Vulnerability",
+         "vulnerability.id": "CVEs", "greenbone.solution": "Fix"},
+        description="Every finding from the scans in the last %s. The same finding "
+                    "appears once per scan." % VULN_WINDOW, size=200,
+        overrides=[rename("CVSS", "CVSS", None, SCORE_STEPS)])), 12, 6)
+
+
+def updates_rows(b, hq):
+    """Pending updates for one host, from vms/updates.py."""
+    s = "%s AND %s AND updates.kind:summary" % (UPD, hq)
+
+    def latest(title, field, steps, desc, unit="short"):
+        return stat(title, [target("A", s, metric("max", field), [date_hist()])],
+                    unit=unit, calc="lastNotNull", steps=steps, description=desc)
+
+    b.add(latest("Updates pending", "updates.pending", NONZERO_ORANGE,
+                 "Packages with a newer version available, as of the last check (every 6h)."),
+          4, 6)
+    b.add(latest("Security updates", "updates.security_pending", NONZERO_RED,
+                 "Pending updates from a -security suite (apt) or flagged by arch-audit."),
+          4, 6)
+    b.add(latest("Reboot required", "updates.reboot_required", NONZERO_ORANGE,
+                 "1 when a kernel or library update is installed but not yet running."),
+          4, 6)
+    b.add(latest("Images outdated", "updates.images_outdated", NONZERO_ORANGE,
+                 "Running containers whose tag now points at a newer image in the registry."),
+          4, 6)
+    b.add(table("Pending packages",
+                [target("A", "%s AND %s AND updates.kind:package" % (UPD, hq),
+                        metric("max", "@timestamp"),
+                        [terms("package.name", 200, order_by="_term", order="asc"),
+                         terms("updates.candidate_version", 2, mid="4", missing="?"),
+                         terms("updates.security", 2, mid="5")])],
+                description="Every package reported pending in the dashboard's range. One "
+                            "upgraded since the last check drops off after the next one.",
+                overrides=[rename("package.name", "Package"),
+                           rename("updates.candidate_version", "Available"),
+                           yes_no("updates.security", "Security", bad=1),
+                           rename("Max", "Last reported", "dateTimeFromNow")]), 8, 6)
+
+
+def greenbone_dashboard():
+    """Every vulnerability Greenbone found, and on which host.
+
+    The question in order: is scanning still happening, how bad is it, which
+    hosts, which vulnerabilities, and what exactly to fix.
+    """
+    host_var = {
+        "name": "host", "label": "Host", "type": "query", "datasource": DS_LOGS,
+        "query": json.dumps({"find": "terms", "field": "host.name", "query": GB}),
+        "refresh": 2, "includeAll": True, "multi": True, "allValue": "*",
+        "current": {"text": ["All"], "value": ["$__all"]}, "sort": 1,
+        "hide": 0, "skipUrlSync": False, "options": [],
+    }
+    b = Board(uid="security-vulns", title="Security — vulnerabilities (Greenbone)",
+              description="Findings from the scheduled Greenbone scan, shipped by "
+                          "greenbone/gvm-export.py. Counts are distinct findings "
+                          "(host + vulnerability + port), so repeat scans do not inflate them.",
+              tags=["homelab", "elastic", "security"], link_tag="host",
+              variables=[host_var], time_from="now-%s" % VULN_WINDOW, refresh="5m",
+              # Set by stack/connect-greenbone.sh --web-ui: a one-click way from
+              # a finding to the scanner's own report on it.
+              urls=[("Greenbone web UI", GREENBONE_WEB_UI)] if GREENBONE_WEB_UI else [])
+    hq = "host.name:$host"
+    f = "%s AND %s" % (GB_FINDINGS, hq)
+
+    b.add(last_seen("Last scan finished", GB,
+                    description="Time of the newest exported report. Older than the scan "
+                                "schedule means the scan, the exporter "
+                                "(elastic-greenbone-export.timer) or the Greenbone VM's agent "
+                                "has stopped."), 4, 4)
+    b.add(total("Hosts scanned", "%s AND %s AND greenbone.scan.kind:host" % (GB, hq),
+                metric("cardinality", "host.ip"),
+                description="Hosts that answered the alive test. Compare with the number "
+                            "of machines you expect on SCAN_TARGETS."), 4, 4)
+    b.add(total("Hosts with findings ≥ medium", "%s AND vulnerability.score.base:>=4" % f,
+                metric("cardinality", "host.ip"), steps=NONZERO_ORANGE), 4, 4)
+    for name, colour, desc in SEVERITIES:
+        b.add(total(name, "%s AND vulnerability.severity:%s" % (f, name), FINDINGS,
+                    description=desc,
+                    steps=[{"color": "green", "value": None}, {"color": colour, "value": 1}]),
+              3, 4)
+
+    b.row("By host")
+    b.add(table("Hosts",
+                [target("A", f,
+                        [{"id": "1", "type": "max", "field": "vulnerability.score.base"},
+                         {"id": "4", "type": "cardinality", "field": "greenbone.finding_key"},
+                         {"id": "6", "type": "cardinality", "field": "vulnerability.id"},
+                         {"id": "7", "type": "max", "field": "@timestamp"}],
+                        [terms("host.name", 100, order_by="1", missing="(unnamed)"),
+                         terms("host.ip", 4, mid="8")])],
+                description="Worst finding per host. Sorted by its CVSS score.",
+                overrides=[rename("host.name", "Host"), rename("host.ip", "IP"),
+                           rename("Max vulnerability.score.base", "Worst CVSS", None, SCORE_STEPS),
+                           rename("Unique Count greenbone.finding_key", "Findings"),
+                           rename("Unique Count vulnerability.id", "CVEs"),
+                           rename("Max @timestamp", "Last scan", "dateTimeFromNow")]), 12, 9)
+    b.add(table("Hosts × severity",
+                [target("A", f, FINDINGS,
+                        [terms("host.name", 100, order_by="_term", order="asc",
+                               missing="(unnamed)"),
+                         terms("vulnerability.severity", 5, mid="4", missing="Log")])],
+                description="Distinct findings per host and severity band.",
+                overrides=[rename("host.name", "Host"),
+                           rename("vulnerability.severity", "Severity"),
+                           rename("Unique Count", "Findings")]), 6, 9)
+    b.add(table("SSH login (authenticated scan)",
+                [target("A", "%s AND %s AND greenbone.scan.kind:host" % (GB, hq),
+                        metric("max", "@timestamp"),
+                        [terms("host.name", 100, order_by="_term", order="asc",
+                               missing="(unnamed)"),
+                         terms("greenbone.scan.auth_ssh", 2, mid="4")])],
+                description="false means Greenbone could not log in as the scan user, so "
+                            "that host was only scanned from the network and its local "
+                            "package vulnerabilities are missing. Fix with "
+                            "vms/install-host-tools.sh --scan-key on that host.",
+                overrides=[rename("host.name", "Host"),
+                           yes_no("greenbone.scan.auth_ssh", "Logged in", bad=0),
+                           rename("Max", "Scanned", "dateTimeFromNow")]), 6, 9)
+
+    b.row("By vulnerability")
+    b.add(timeseries("Findings per scan, by severity",
+                     [target("A", f, FINDINGS,
+                             [terms("vulnerability.severity", 5, missing="Log"),
+                              {"id": "2", "type": "date_histogram", "field": "@timestamp",
+                               "settings": {"interval": "1d", "min_doc_count": "1",
+                                            "trimEdges": "0"}}],
+                             alias="{{term vulnerability.severity}}")],
+                     style="bars", stack=True,
+                     description="Trend over time — widen the range to see whether patching "
+                                 "is keeping up.",
+                     overrides=[{"matcher": {"id": "byName", "options": n},
+                                 "properties": [{"id": "color", "value":
+                                                 {"mode": "fixed", "fixedColor": c}}]}
+                                for n, c, _ in SEVERITIES]), 8, 9)
+    b.add(table("Top vulnerabilities",
+                [target("A", f,
+                        [{"id": "1", "type": "max", "field": "vulnerability.score.base"},
+                         {"id": "4", "type": "cardinality", "field": "host.ip"}],
+                        [terms("greenbone.nvt.name", 50, order_by="1", missing="(unnamed)")])],
+                description="One row per vulnerability test that fired, worst first, with "
+                            "how many hosts it fired on.",
+                overrides=[rename("greenbone.nvt.name", "Vulnerability"),
+                           rename("Max", "CVSS", None, SCORE_STEPS),
+                           rename("Unique Count", "Hosts")]), 16, 9)
+
+    b.row("Detail")
+    b.add(raw_table(
+        "Findings (medium and above)", "%s AND vulnerability.score.base:>=4" % f,
+        ["@timestamp", "host.name", "host.ip", "greenbone.port", "vulnerability.score.base",
+         "vulnerability.severity", "greenbone.nvt.name", "vulnerability.id",
+         "greenbone.solution_type", "greenbone.solution"],
+        {"@timestamp": "Scanned", "host.name": "Host", "host.ip": "IP",
+         "greenbone.port": "Port", "vulnerability.score.base": "CVSS",
+         "vulnerability.severity": "Severity", "greenbone.nvt.name": "Vulnerability",
+         "vulnerability.id": "CVEs", "greenbone.solution_type": "Fix type",
+         "greenbone.solution": "Fix"},
+        description="Individual findings, newest scan first. Pick a host above to narrow it. "
+                    "The full detection output is in greenbone.detection — open the "
+                    "document in Kibana Discover (data view logs-*, "
+                    "event.dataset:greenbone.finding).",
+        overrides=[rename("CVSS", "CVSS", None, SCORE_STEPS)]), 24, 14)
+    return b
+
+
+def updates_dashboard():
+    """Pending package and container-image updates across every host."""
+    b = Board(uid="software-updates", title="Software updates",
+              description="From vms/updates.py on every enrolled host, every 6 hours. Each "
+                          "number is the host's latest check in the range.",
+              tags=["homelab", "elastic", "updates"], link_tag="host",
+              time_from="now-7h", refresh="5m")
+    s = "%s AND updates.kind:summary" % UPD
+
+    hosts = metric("cardinality", "host.name")
+    b.add(total("Hosts reporting", s, hosts,
+                description="Hosts whose checker ran in the range. Fewer than your agent "
+                            "count means a host is missing vms/install-host-tools.sh."), 4, 4)
+    b.add(total("Hosts with updates", s + " AND updates.pending:>0", hosts,
+                steps=NONZERO_ORANGE), 4, 4)
+    b.add(total("Hosts with security updates", s + " AND updates.security_pending:>0", hosts,
+                steps=NONZERO_RED), 4, 4)
+    b.add(total("Hosts needing a reboot", s + " AND updates.reboot_required:true", hosts,
+                steps=NONZERO_ORANGE), 4, 4)
+    b.add(total("Outdated container images",
+                "%s AND updates.kind:image AND updates.image_outdated:true" % UPD,
+                metric("cardinality", "container.name"), steps=NONZERO_ORANGE,
+                description="Running containers whose tag now resolves to a different image "
+                            "in the registry. Pull and recreate to pick it up."), 4, 4)
+    b.add(total("Package-list refresh failures", s + " AND updates.refresh_ok:false", hosts,
+                steps=NONZERO_ORANGE,
+                description="Hosts where apt-get update or checkupdates failed, so their "
+                            "numbers may be stale. A Proxmox host without a subscription "
+                            "with the enterprise repo still enabled always lands here."), 4, 4)
+
+    # top_metrics: the values from each host's *newest* summary, not the max
+    # over the range — a host patched an hour ago should read zero now.
+    # Numeric fields only: top_metrics on a boolean (reboot_required) makes
+    # Grafana 12's Elasticsearch backend answer HTTP 500, which the panel shows
+    # as an error rather than as a missing column. That one is a max instead,
+    # so it can lag a reboot by one check.
+    latest = ["updates.pending", "updates.security_pending", "updates.images_outdated"]
+    b.add(table("Hosts",
+                [target("A", s,
+                        [{"id": "1", "type": "top_metrics",
+                          "settings": {"order": "desc", "orderBy": "@timestamp",
+                                       "metrics": latest}},
+                         {"id": "6", "type": "max", "field": "updates.reboot_required"},
+                         {"id": "4", "type": "max", "field": "@timestamp"}],
+                        [terms("host.name", 200, order_by="_term", order="asc",
+                               missing="(unnamed)"),
+                         terms("updates.manager", 2, mid="5", missing="none")])],
+                description="Latest check per host.",
+                overrides=[rename("host.name", "Host"), rename("updates.manager", "Manager"),
+                           rename("Top Metrics updates.pending", "Pending", None, NONZERO_ORANGE),
+                           rename("Top Metrics updates.security_pending", "Security", None,
+                                  NONZERO_RED),
+                           rename("Max updates.reboot_required", "Reboot", None,
+                                  NONZERO_ORANGE),
+                           rename("Top Metrics updates.images_outdated", "Stale images", None,
+                                  NONZERO_ORANGE),
+                           rename("Max @timestamp", "Checked", "dateTimeFromNow")]), 12, 10)
+    b.add(timeseries("Pending updates by host",
+                     [target("A", s, metric("max", "updates.pending"),
+                             [terms("host.name", 20, missing="(unnamed)"),
+                              date_hist()],
+                             alias="{{term host.name}}")],
+                     description="Widen the range: a host whose line only climbs is not "
+                                 "being patched."), 12, 10)
+
+    b.row("Packages")
+    b.add(table("Security updates pending",
+                [target("A", "%s AND updates.kind:package AND updates.security:true" % UPD,
+                        metric("max", "@timestamp"),
+                        [terms("host.name", 100, order_by="_term", order="asc",
+                               missing="(unnamed)"),
+                         terms("package.name", 200, mid="4", order_by="_term", order="asc"),
+                         terms("updates.candidate_version", 2, mid="5", missing="?")])],
+                overrides=[rename("host.name", "Host"), rename("package.name", "Package"),
+                           rename("updates.candidate_version", "Available"),
+                           rename("Max", "Last reported", "dateTimeFromNow")]), 12, 10)
+    b.add(table("Most widely pending packages",
+                [target("A", "%s AND updates.kind:package" % UPD,
+                        metric("cardinality", "host.name"),
+                        [terms("package.name", 50, order_by="1")])],
+                description="A package pending on many hosts at once is usually one "
+                            "upstream release — patch it everywhere in one go.",
+                overrides=[rename("package.name", "Package"),
+                           rename("Unique Count", "Hosts")]), 12, 10)
+
+    b.row("Container images")
+    b.add(column_order(table("Running containers",
+                [target("A", "%s AND updates.kind:image" % UPD, metric("max", "@timestamp"),
+                        [terms("host.name", 50, order_by="_term", order="asc",
+                               missing="(unnamed)"),
+                         terms("container.name", 200, mid="4", order_by="_term", order="asc"),
+                         terms("updates.image_ref", 2, mid="5", missing="?"),
+                         terms("updates.status", 2, mid="6", missing="?")])],
+                description="status: outdated — the registry has a newer image under this "
+                            "tag; current — up to date; pinned — started by digest; local / "
+                            "not_found — built here, or in a private registry this "
+                            "checker has no credentials for; error — registry "
+                            "unreachable. A newer *tag* (9.5.2 after 9.5.1) is not "
+                            "detected.",
+                overrides=[rename("host.name", "Host"), rename("container.name", "Container"),
+                           rename("updates.image_ref", "Image"),
+                           rename("updates.status", "Status"),
+                           rename("Max", "Checked", "dateTimeFromNow")]),
+                       ["host.name", "container.name", "updates.image_ref", "updates.status"]),
+          24, 12)
+    return b
+
+
 # ── Writing ─────────────────────────────────────────────────────────────────
 
 def slug(name):
@@ -1437,11 +1856,15 @@ def main(argv):
     if not os.path.isdir(outdir):
         os.makedirs(outdir)
 
+    all_datasets = {d for c in caps.values() for d in c.get("datasets", [])}
+    greenbone = "greenbone.finding" in all_datasets
+
     boards = []
     stems = unique_slugs([h for _, h in resolved])
     for a, host_name in resolved:
         stem = stems[host_name]
-        b = host_dashboard(a, host_name, caps.get(a["policy_id"], {}), stem)
+        c = dict(caps.get(a["policy_id"], {}), greenbone=greenbone)
+        b = host_dashboard(a, host_name, c, stem)
         boards.append(("host-%s.json" % stem, b.to_dict()))
 
     boards.append(("network-overview.json", network_overview(receivers).to_dict()))
@@ -1453,6 +1876,10 @@ def main(argv):
     # exists — one half being empty is itself the thing you want to see.
     if "cef" in receivers or "iptables" in receivers:
         boards.append(("network-unifi.json", unifi_dashboard(receivers).to_dict()))
+    if greenbone:
+        boards.append(("security-vulnerabilities.json", greenbone_dashboard().to_dict()))
+    if "software_updates" in all_datasets:
+        boards.append(("software-updates.json", updates_dashboard().to_dict()))
 
     print("\nWriting to %s%s" % (outdir, "  (dry run)" if dry_run else ""))
     counts = {}

@@ -16,10 +16,13 @@ note() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=1; }
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$*"; }
 step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 
-mapfile -t SH   < <(find . -name '*.sh'   -not -path './.git/*')
-mapfile -t PY   < <(find . -name '*.py'   -not -path './.git/*' -not -path '*/__pycache__/*')
-mapfile -t JSON < <(find . -name '*.json' -not -path './.git/*')
-mapfile -t YML  < <(find . \( -name '*.yml' -o -name '*.yaml' \) -not -path './.git/*')
+# greenbone/secrets/ is root-owned 0700 once setup.sh has run, and holds only
+# key material — pruned so find does not complain about it.
+files() { find . \( -path ./.git -o -path ./greenbone/secrets \) -prune -o "$@" -print; }
+mapfile -t SH   < <(files -name '*.sh')
+mapfile -t PY   < <(files -name '*.py' -not -path '*/__pycache__/*')
+mapfile -t JSON < <(files -name '*.json')
+mapfile -t YML  < <(files \( -name '*.yml' -o -name '*.yaml' \))
 
 step "bash -n  (${#SH[@]} scripts)"
 for f in "${SH[@]}"; do
